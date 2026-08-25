@@ -41,9 +41,10 @@ if (config.corsOrigin) {
 app.use(
   rateLimit({
     windowMs: 60 * 1000,
-    max: 300,
+    max: config.apiRateMax,
     standardHeaders: true,
     legacyHeaders: false,
+    message: { error: 'Too many requests. Please wait a moment and try again.' },
   })
 );
 
@@ -89,13 +90,51 @@ app.use((err, req, res, next) => {
   if (err && err.code === 'ER_DUP_ENTRY') {
     return res.status(409).json({ error: 'That record already exists.' });
   }
+  // Storage problems are an operator issue, not a user mistake. Say so plainly
+  // rather than hiding behind a generic 500.
+  if (err && (err.code === 'EACCES' || err.code === 'EPERM')) {
+    console.error('[storage] cannot write to UPLOAD_DIR:', config.uploadDir, err.message);
+    return res.status(500).json({
+      error: 'The server cannot save uploads right now. Please tell the administrator.',
+    });
+  }
+  if (err && err.code === 'ENOSPC') {
+    console.error('[storage] disk full while writing to', config.uploadDir);
+    return res.status(507).json({ error: 'The server has run out of disk space for uploads.' });
+  }
   // eslint-disable-next-line no-console
   console.error('[error]', err);
   return res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
+/**
+ * Prove at boot that uploads will actually work.
+ *
+ * The upload directory is a bind mount, so its permissions come from the host
+ * and can be wrong in a way nothing else notices — the app starts happily and
+ * then fails on the first photo a field worker tries to send. Writing a probe
+ * file here turns that into a loud message at deploy time.
+ */
+async function checkUploadDir() {
+  const probe = path.join(config.uploadDir, '.write-probe');
+  try {
+    await fs.promises.mkdir(config.uploadDir, { recursive: true });
+    await fs.promises.writeFile(probe, 'ok');
+    await fs.promises.unlink(probe);
+    console.log(`[uploads] ${config.uploadDir} is writable`);
+  } catch (err) {
+    console.error(
+      `[uploads] CANNOT WRITE to ${config.uploadDir} (${err.code}). ` +
+        'Photo and document uploads will fail. ' +
+        'If this is a Docker bind mount, fix ownership on the host: ' +
+        'chown -R 1000:1000 data/uploads'
+    );
+  }
+}
+
 async function start() {
   await waitForDatabase();
+  await checkUploadDir();
   app.listen(config.port, () => {
     // eslint-disable-next-line no-console
     console.log(`[api] listening on :${config.port} (${config.isProd ? 'production' : 'development'})`);

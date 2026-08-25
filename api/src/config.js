@@ -73,6 +73,10 @@ const config = {
   loginRateWindowMinutes: Number(process.env.LOGIN_RATE_WINDOW_MINUTES || 15),
   loginRateMax: Number(process.env.LOGIN_RATE_MAX || 20),
 
+  // Overall request ceiling per IP per minute. A whole panchayat office behind
+  // one public IP counts as a single client here, so this needs headroom.
+  apiRateMax: Number(process.env.API_RATE_MAX || 600),
+
   corsOrigin: process.env.CORS_ORIGIN || '',
 };
 

@@ -259,6 +259,30 @@ scripts/backup.sh        Nightly dump + uploads tarball, 14-day retention
 docs/PLAN.md             Requirements, data model and traceability matrix
 ```
 
+## Uploads and file permissions
+
+Uploads land in `data/uploads` on the host, bind-mounted into the API container
+at `/data/uploads`. The API runs as the unprivileged `node` user (uid 1000), and
+a bind mount carries the **host's** ownership — so a directory created by root
+leaves the container unable to write, and every upload fails with a 500.
+
+The container entrypoint corrects this automatically: it starts as root, chowns
+the upload directory, then drops to `node` before exec'ing the server. The API
+itself never runs as root.
+
+On boot the API also writes a probe file and logs the result:
+
+```
+[uploads] /data/uploads is writable
+```
+
+If you instead see `[uploads] CANNOT WRITE ...`, fix the host directory:
+
+```bash
+chown -R 1000:1000 data/uploads
+docker compose restart api
+```
+
 ## Backups
 
 ```bash
