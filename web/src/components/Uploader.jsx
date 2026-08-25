@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api';
 
 /**
@@ -32,6 +32,36 @@ async function compressImage(file, maxDim = 1400, quality = 0.75) {
   return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
 }
 
+const kb = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+/**
+ * Preview image with a blob-URL fallback.
+ *
+ * A blob: URL only lives as long as the page that created it. Drafts are
+ * restored from localStorage after a reload, so a persisted blob URL is already
+ * dead and renders as a broken image. On error we fall back to fetching the
+ * uploaded file back from the server, which always works.
+ */
+function PreviewImage({ previewUrl, fileId, alt, className }) {
+  const [src, setSrc] = useState(previewUrl || api.fileUrl(fileId));
+
+  useEffect(() => {
+    setSrc(previewUrl || api.fileUrl(fileId));
+  }, [previewUrl, fileId]);
+
+  return (
+    <img
+      className={className}
+      src={src}
+      alt={alt}
+      onError={() => {
+        const fallback = api.fileUrl(fileId);
+        if (src !== fallback) setSrc(fallback);
+      }}
+    />
+  );
+}
+
 export function PhotoUploader({ value, onChange, onError }) {
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
@@ -44,7 +74,13 @@ export function PhotoUploader({ value, onChange, onError }) {
     try {
       const compressed = await compressImage(file, 1200, 0.72);
       const res = await api.uploadFile(compressed, 'applicant_photo');
-      onChange({ id: res.file.id, name: res.file.originalName, preview: URL.createObjectURL(compressed) });
+      onChange({
+        id: res.file.id,
+        name: res.file.originalName,
+        sizeBytes: compressed.size,
+        originalSize: file.size,
+        preview: URL.createObjectURL(compressed),
+      });
     } catch (err) {
       onError(err.message);
     } finally {
@@ -62,19 +98,34 @@ export function PhotoUploader({ value, onChange, onError }) {
         onChange={handle}
         style={{ display: 'none' }}
       />
+
       {value ? (
-        <div className="thumbs">
-          <div className="thumb">
-            <img src={value.preview || api.fileUrl(value.id)} alt="Applicant" />
-            <button type="button" className="x" onClick={() => onChange(null)} aria-label="Remove photo">
-              ×
-            </button>
+        // A real preview card, not a 88px thumbnail — the supervisor needs to
+        // see that they photographed the right person, the right way up, in
+        // focus, before they submit.
+        <div className="photo-preview">
+          <PreviewImage previewUrl={value.preview} fileId={value.id} alt="Applicant photo preview" />
+          <div className="photo-preview-meta">
+            <div className="ok">✓ Photo uploaded</div>
+            <div className="name">{value.name}</div>
+            {value.sizeBytes && (
+              <div className="size">
+                {kb(value.sizeBytes)}
+                {value.originalSize > value.sizeBytes && (
+                  <span className="shrunk"> · compressed from {kb(value.originalSize)}</span>
+                )}
+              </div>
+            )}
+            <div className="photo-preview-actions">
+              <button type="button" onClick={() => inputRef.current?.click()}>Replace</button>
+              <button type="button" className="danger" onClick={() => onChange(null)}>Remove</button>
+            </div>
           </div>
         </div>
       ) : (
         <div className="file-btn" role="button" tabIndex={0} onClick={() => inputRef.current?.click()}
              onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}>
-          {busy ? 'Uploading…' : '📷  Take or choose photo'}
+          {busy ? <><span className="spinner dark" /> Uploading…</> : '📷  Take or choose photo'}
         </div>
       )}
     </div>
@@ -132,10 +183,10 @@ export function DocumentUploader({ value = [], onChange, onError, max = 5 }) {
         <div className="thumbs">
           {value.map((f) => (
             <div className="thumb" key={f.id}>
-              {f.preview ? (
-                <img src={f.preview} alt={f.name} />
+              {f.isImage ? (
+                <PreviewImage previewUrl={f.preview} fileId={f.id} alt={f.name} />
               ) : (
-                <div className="doc">📄<br />{f.name.slice(0, 18)}</div>
+                <div className="doc">PDF<br />{f.name.slice(0, 18)}</div>
               )}
               <button
                 type="button"

@@ -53,7 +53,7 @@ async function login(page, u, p) {
 }
 
 /** Fills and submits one application. Returns its reference number. */
-async function submitForm(page, { supportType, supportReason, withFiles }) {
+async function submitForm(page, { supportType, supportReason, withFiles, amount = '12500' }) {
   await page.goto(`${BASE}/form`, { waitUntil: 'networkidle' });
   await page.waitForSelector('[data-field="aadhaar"]');
 
@@ -76,6 +76,7 @@ async function submitForm(page, { supportType, supportReason, withFiles }) {
   await page.locator('[data-field="supportTypeId"]').selectOption({ label: supportType });
   await page.waitForTimeout(250);
   await page.locator('[data-field="supportReasonId"]').selectOption({ label: supportReason });
+  await page.locator('[data-field="amount"]').fill(amount);
 
   await page.locator('[data-field="ppRecommend"] button.yes').click();
   await page.locator('[data-field="msRecommend"] button.yes').click();
@@ -83,7 +84,16 @@ async function submitForm(page, { supportType, supportReason, withFiles }) {
 
   if (withFiles) {
     await page.locator('input[type=file][accept="image/*"]').setInputFiles(PHOTO);
-    await page.waitForSelector('.thumb img', { timeout: 20000 });
+    await page.waitForSelector('.photo-preview img', { timeout: 20000 });
+
+    const img = page.locator('.photo-preview img');
+    check('preview appears straight after choosing the file', await img.isVisible());
+    check('preview image actually renders', (await img.evaluate((el) => el.naturalWidth)) > 0);
+    check('preview shows the file name',
+      ((await page.locator('.photo-preview-meta .name').textContent()) || '').includes('applicant'));
+    check('preview offers Replace and Remove',
+      (await page.locator('.photo-preview-actions button').count()) === 2);
+
     await page.locator('input[type=file][multiple]').setInputFiles(DOC);
     await page.waitForTimeout(2500);
   }
@@ -142,6 +152,9 @@ console.log('\nSupervisor detail page');
     (await page.locator('.support-type').textContent()) === 'Education');
   check('Reason of Support is shown',
     (await page.locator('.support-reason').textContent()) === 'School Admission Fee');
+  check('Amount Requested is shown on the detail page',
+    ((await page.locator('.support-amount').textContent()) || '').includes('12,500'),
+    await page.locator('.support-amount').textContent());
 
   const photoImg = page.locator('.photo-tile img');
   check('applicant photo is rendered', await photoImg.isVisible());
@@ -177,6 +190,34 @@ console.log('\nRepeat application — photo falls back to the beneficiary record
   check('fallback photo actually loaded', natural > 0, `naturalWidth=${natural}`);
   check('no documents on this one, and it says so',
     (await page.locator('.no-files').count()) === 1);
+}
+
+/* --------------------------- preview survives a reload (dead blob URL) ---- */
+
+console.log('\nDraft restored after reload still shows the photo');
+{
+  const { page } = await session();
+  await login(page, 'sup.dharma', 'Sup@2026#DHM');
+  await page.goto(`${BASE}/form`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-field="aadhaar"]');
+  await page.locator('[data-field="aadhaar"]').fill(AADHAAR);
+  await page.waitForTimeout(1300);
+  await page.locator('input[type=file][accept="image/*"]').setInputFiles(PHOTO);
+  await page.waitForSelector('.photo-preview img', { timeout: 20000 });
+  await page.waitForTimeout(900); // let the draft autosave
+
+  // Reload. The blob: URL saved in the draft is now dead — the component must
+  // fall back to fetching the uploaded file from the server.
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.photo-preview img', { timeout: 15000 });
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: `${OUT}a8-restored-draft.png`, fullPage: true });
+
+  const w = await page.locator('.photo-preview img').evaluate((el) => el.naturalWidth);
+  check('restored draft still renders the photo, not a broken image', w > 0, `naturalWidth=${w}`);
+
+  // Leave nothing behind for the next block.
+  await page.evaluate(() => localStorage.clear());
 }
 
 /* ------------------------------------------------- MLA accepts with note -- */
@@ -228,6 +269,48 @@ console.log('\nSupervisor sees the MLA comment');
   await page.screenshot({ path: `${OUT}a6-supervisor-sees-comment.png`, fullPage: true });
   check('supervisor sees the MLA comment on an accepted form',
     ((await page.locator('.mla-note').textContent()) || '').includes('Rs. 10,000 towards school fees'));
+}
+
+/* ------------------------------------------------- MLA amount summary ----- */
+
+console.log('\nMLA dashboard amount summary');
+{
+  const { page, errs } = await session();
+  await login(page, 'mla', 'Mla@2026#LRT');
+  await page.waitForSelector('.summary-card', { timeout: 15000 });
+  await page.screenshot({ path: `${OUT}a9-mla-summary.png`, fullPage: true });
+
+  check('summary card is on the MLA dashboard', await page.locator('.summary-card').isVisible());
+  check('four headline tiles are shown', (await page.locator('.summary-tiles .stat').count()) === 4);
+  check('the rule is stated on screen',
+    ((await page.locator('.summary-note').textContent()) || '').includes('Requested = Accepted + Pending'));
+
+  const headers = await page.locator('.summary-table th').allTextContents();
+  check('table has Requested / Accepted / Pending / Rejected columns',
+    ['Requested', 'Accepted', 'Pending', 'Rejected'].every((h) => headers.includes(h)), headers.join('|'));
+
+  check('block rows are present', (await page.locator('.summary-table .block-row').count()) >= 1);
+  check('panchayat rows are shown under a block',
+    (await page.locator('.summary-table .panchayat-row').count()) >= 1);
+  check('a grand total row is present', await page.locator('.summary-table .grand-row').isVisible());
+
+  // Collapsing a block hides its panchayats.
+  const before = await page.locator('.summary-table .panchayat-row').count();
+  await page.locator('.summary-table .block-row').first().click();
+  await page.waitForTimeout(300);
+  const after = await page.locator('.summary-table .panchayat-row').count();
+  check('clicking a block collapses its panchayats', after < before, `${before} -> ${after}`);
+
+  check('no page errors on the dashboard', errs.length === 0, errs.join('|'));
+}
+
+console.log('\nSupervisor must not see the summary');
+{
+  const { page } = await session();
+  await login(page, 'sup.dharma', 'Sup@2026#DHM');
+  await page.waitForTimeout(1200);
+  check('supervisor dashboard has no amount summary',
+    (await page.locator('.summary-card').count()) === 0);
 }
 
 /* ------------------------------------------------------- mobile check ----- */

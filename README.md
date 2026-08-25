@@ -12,7 +12,7 @@ user-management screen:
 | **MLA** | Sees every submission; accepts or rejects with a reason; exports CSV |
 
 **Stack:** React 18 + Vite · Node 20 + Express · MySQL 8 · Docker Compose
-**Bundle:** 63 KB gzipped · **Tests:** 68 API + 50 browser + 37 responsive checks, all passing
+**Bundle:** 63 KB gzipped · **Tests:** 110 API + 51 journey + 37 responsive + 42 detail/amount checks, all passing
 
 ---
 
@@ -142,12 +142,35 @@ migrations applied by hand:
 ```bash
 cd /opt/sahayak
 git pull
-docker compose exec -T db mysql -u root -p"$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)" \
-  lrt_panchayat < db/migrations/001_add_mla_comment.sql
+
+PW=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+for m in db/migrations/*.sql; do
+  echo "applying $m"
+  docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat < "$m"
+done
+
 docker compose up -d --build
 ```
 
 Every file in `db/migrations/` is safe to run more than once.
+
+### Amount totals
+
+Each application carries an `amount` (DECIMAL, never FLOAT — money summed as
+binary floating point drifts, and these totals get reported upward).
+
+`GET /api/applications/summary` rolls them up by block, then by panchayat:
+
+```
+requested = accepted + pending
+```
+
+A **rejected** application is deliberately excluded from *requested* — once the
+MLA has turned it down it is no longer money being asked for. It is reported in
+its own column so the figure stays visible rather than vanishing. The dashboard
+states the rule on screen so nobody has to guess.
+
+The endpoint is MLA-only, enforced server-side.
 
 ### One Aadhaar, many applications
 

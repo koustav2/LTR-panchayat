@@ -147,6 +147,9 @@ CREATE TABLE IF NOT EXISTS applications (
 
   support_type_id   INT UNSIGNED NOT NULL,
   support_reason_id INT UNSIGNED NOT NULL,
+  -- Amount of support sought, in rupees. DECIMAL, never FLOAT — money summed
+  -- as binary floating point drifts, and these totals are reported upward.
+  amount            DECIMAL(12,2) NOT NULL DEFAULT 0.00,
 
   pp_recommend      ENUM('yes','no') NOT NULL,
   pp_comment        TEXT NULL,
@@ -174,6 +177,7 @@ CREATE TABLE IF NOT EXISTS applications (
   KEY ix_app_beneficiary (beneficiary_id),
   KEY ix_app_submitted_at (submitted_at),
   KEY ix_app_applicant_name (applicant_name),
+  KEY ix_app_rollup (block_id, panchayat_id, status),
   KEY ix_app_phone (phone),
   CONSTRAINT fk_app_beneficiary FOREIGN KEY (beneficiary_id)    REFERENCES beneficiaries (id),
   CONSTRAINT fk_app_block       FOREIGN KEY (block_id)          REFERENCES blocks (id),

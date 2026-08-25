@@ -138,3 +138,18 @@ export function DeskHead({ crumb, title, children }) {
     </div>
   );
 }
+
+/**
+ * Rupees in Indian digit grouping — 12,50,000 rather than 1,250,000.
+ * `compact` drops the paise, which is what totals and list rows want.
+ */
+export function formatMoney(value, { compact = true } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: compact ? 0 : 2,
+    maximumFractionDigits: compact ? 0 : 2,
+  }).format(n);
+}

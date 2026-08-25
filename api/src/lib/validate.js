@@ -83,6 +83,25 @@ function cleanName(value, label) {
   return v;
 }
 
+/**
+ * Money. Accepts "12,500", "12500.50", " 12500 " and rejects anything that is
+ * not a plain positive number. Returned as a fixed-2 string so it is handed to
+ * MySQL as an exact DECIMAL rather than a float that has already lost precision.
+ */
+function cleanAmount(value, label = 'Amount') {
+  const raw = String(value ?? '').replace(/[,\s₹]/g, '');
+  if (raw === '') fail(`${label} is required.`);
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+    fail(`${label} must be a number, with at most two decimal places.`);
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) fail(`${label} must be greater than zero.`);
+  // DECIMAL(12,2) tops out at 9,999,999,999.99 — cap well below that so a
+  // mistyped extra digit is caught here rather than by the database.
+  if (n > 100000000) fail(`${label} looks too large. Maximum is 10,00,00,000.`);
+  return n.toFixed(2);
+}
+
 function cleanId(value, label) {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) fail(`${label} is required.`);
@@ -113,6 +132,7 @@ module.exports = {
   cleanPhone,
   cleanPin,
   cleanName,
+  cleanAmount,
   cleanId,
   cleanYesNo,
   cleanComment,

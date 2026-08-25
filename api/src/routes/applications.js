@@ -14,6 +14,7 @@ const {
   cleanPhone,
   cleanPin,
   cleanName,
+  cleanAmount,
   cleanId,
   cleanYesNo,
   cleanComment,
@@ -41,6 +42,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
     const pinCode = cleanPin(b.pinCode);
     const supportTypeId = cleanId(b.supportTypeId, 'Type of Support');
     const supportReasonId = cleanId(b.supportReasonId, 'Reason of Support');
+    const amount = cleanAmount(b.amount, 'Amount');
 
     const ppRecommend = cleanYesNo(b.ppRecommend, 'Comments of Panchayat Prabhari');
     const msRecommend = cleanYesNo(b.msRecommend, 'Comments of Mandal Sabhapati');
@@ -163,10 +165,10 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
            (reference_no, beneficiary_id,
             applicant_name, guardian_name, phone,
             block_id, panchayat_id, pin_code,
-            support_type_id, support_reason_id,
+            support_type_id, support_reason_id, amount,
             pp_recommend, pp_comment, ms_recommend, ms_comment, mp_recommend, mp_comment,
             submitted_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           referenceNo,
           beneficiaryId,
@@ -178,6 +180,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
           pinCode,
           supportTypeId,
           supportReasonId,
+          amount,
           ppRecommend,
           ppComment,
           msRecommend,
@@ -297,7 +300,7 @@ router.get('/', async (req, res, next) => {
     // bound, because prepared statements reject placeholders there.
     const rows = await query(
       `SELECT a.id, a.reference_no, a.status, a.rejection_reason, a.submitted_at, a.reviewed_at,
-              a.applicant_name, a.guardian_name, a.phone, bn.aadhaar_last4,
+              a.applicant_name, a.guardian_name, a.phone, a.amount, bn.aadhaar_last4,
               bl.name AS block_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name
@@ -347,9 +350,98 @@ router.get('/', async (req, res, next) => {
         panchayatName: r.panchayat_name,
         supportType: r.support_type,
         supportReason: r.support_reason,
+        amount: Number(r.amount),
         submittedByName: r.submitted_by_name,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Amount rollup by block and panchayat (MLA)                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/applications/summary
+ *
+ * Money totals grouped by block, then panchayat.
+ *
+ *   requested = accepted + pending
+ *
+ * A rejected application is deliberately NOT part of "requested" — once the
+ * MLA has turned it down it is no longer money being asked for. It is reported
+ * on its own line so nothing disappears silently.
+ *
+ * SUM() over DECIMAL comes back from MySQL as a string; it is converted once,
+ * here, so every consumer gets a number.
+ */
+router.get('/summary', requireRole('mla'), async (req, res, next) => {
+  try {
+    const rows = await query(
+      `SELECT a.block_id, bl.name AS block_name, bl.sort_order AS block_order,
+              a.panchayat_id, p.name AS panchayat_name, p.sort_order AS panchayat_order,
+              SUM(CASE WHEN a.status = 'accepted' THEN a.amount ELSE 0 END) AS accepted,
+              SUM(CASE WHEN a.status = 'pending'  THEN a.amount ELSE 0 END) AS pending,
+              SUM(CASE WHEN a.status = 'rejected' THEN a.amount ELSE 0 END) AS rejected,
+              SUM(a.status = 'accepted') AS accepted_count,
+              SUM(a.status = 'pending')  AS pending_count,
+              SUM(a.status = 'rejected') AS rejected_count,
+              COUNT(*) AS total_count
+         FROM applications a
+         JOIN blocks bl    ON bl.id = a.block_id
+         JOIN panchayats p ON p.id  = a.panchayat_id
+        GROUP BY a.block_id, bl.name, bl.sort_order,
+                 a.panchayat_id, p.name, p.sort_order
+        ORDER BY bl.sort_order, bl.name, p.sort_order, p.name`
+    );
+
+    const blocks = [];
+    const byBlock = new Map();
+
+    const zero = () => ({
+      accepted: 0, pending: 0, rejected: 0, requested: 0,
+      acceptedCount: 0, pendingCount: 0, rejectedCount: 0, totalCount: 0,
+    });
+
+    const add = (target, r) => {
+      const accepted = Number(r.accepted);
+      const pending = Number(r.pending);
+      const rejected = Number(r.rejected);
+      target.accepted += accepted;
+      target.pending += pending;
+      target.rejected += rejected;
+      target.requested += accepted + pending;
+      target.acceptedCount += Number(r.accepted_count);
+      target.pendingCount += Number(r.pending_count);
+      target.rejectedCount += Number(r.rejected_count);
+      target.totalCount += Number(r.total_count);
+    };
+
+    const overall = zero();
+
+    rows.forEach((r) => {
+      if (!byBlock.has(r.block_id)) {
+        const b = { blockId: r.block_id, blockName: r.block_name, panchayats: [], ...zero() };
+        byBlock.set(r.block_id, b);
+        blocks.push(b);
+      }
+      const block = byBlock.get(r.block_id);
+
+      const panchayat = {
+        panchayatId: r.panchayat_id,
+        panchayatName: r.panchayat_name,
+        ...zero(),
+      };
+      add(panchayat, r);
+      block.panchayats.push(panchayat);
+
+      add(block, r);
+      add(overall, r);
+    });
+
+    res.json({ overall, blocks });
   } catch (err) {
     next(err);
   }
@@ -366,7 +458,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
       `SELECT a.reference_no, a.status, a.rejection_reason, a.mla_comment, a.submitted_at, a.reviewed_at,
               a.applicant_name, a.guardian_name, a.phone, bn.aadhaar_last4, a.pin_code,
               bl.name AS block_name, p.name AS panchayat_name,
-              st.name AS support_type, sr.name AS support_reason,
+              st.name AS support_type, sr.name AS support_reason, a.amount,
               a.pp_recommend, a.pp_comment, a.ms_recommend, a.ms_comment,
               a.mp_recommend, a.mp_comment,
               u.full_name AS submitted_by_name
@@ -386,7 +478,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
     const headers = [
       'Reference No', 'Status', 'Rejection Reason', 'MLA Comment', 'Submitted At', 'Reviewed At',
       'Name', 'Father/Husband Name', 'Phone', 'Aadhaar (last 4)', 'PIN',
-      'Block', 'Panchayat', 'Type of Support', 'Reason of Support',
+      'Block', 'Panchayat', 'Type of Support', 'Reason of Support', 'Amount',
       'Panchayat Prabhari', 'PP Comment', 'Mandal Sabhapati', 'MS Comment',
       'Mandal Prabhari', 'MP Comment', 'Submitted By',
     ];
@@ -404,7 +496,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
       lines.push([
         r.reference_no, r.status, r.rejection_reason, r.mla_comment, r.submitted_at, r.reviewed_at,
         r.applicant_name, r.guardian_name, r.phone, r.aadhaar_last4, r.pin_code,
-        r.block_name, r.panchayat_name, r.support_type, r.support_reason,
+        r.block_name, r.panchayat_name, r.support_type, r.support_reason, r.amount,
         r.pp_recommend, r.pp_comment, r.ms_recommend, r.ms_comment,
         r.mp_recommend, r.mp_comment, r.submitted_by_name,
       ].map(esc).join(','));
@@ -491,6 +583,7 @@ router.get('/:id', async (req, res, next) => {
         pinCode: row.pin_code,
         supportType: row.support_type,
         supportReason: row.support_reason,
+        amount: Number(row.amount),
         ppRecommend: row.pp_recommend,
         ppComment: row.pp_comment,
         msRecommend: row.ms_recommend,

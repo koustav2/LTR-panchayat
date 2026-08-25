@@ -140,6 +140,12 @@ const sup = await session('supervisor');
   check('Reasons exclude other support types', !reasonOptions.includes('Dialysis'));
   await page.locator('[data-field="supportReasonId"]').selectOption({ label: 'School Admission Fee' });
 
+  // Amount is required and echoes back formatted, so a stray zero is visible.
+  await page.locator('[data-field="amount"]').fill('12500');
+  await page.waitForTimeout(200);
+  check('amount echoes back in rupees',
+    ((await page.locator('.field .hint').allTextContents()).join('|')).includes('12,500'));
+
   // Validation: "No" must carry a comment.
   await page.locator('[data-field="ppRecommend"] button.no').click();
   await page.getByRole('button', { name: 'Submit Form' }).click();
@@ -190,6 +196,7 @@ const sup = await session('supervisor');
   await page.locator('[data-field="supportTypeId"]').selectOption({ label: 'Health' });
   await page.waitForTimeout(150);
   await page.locator('[data-field="supportReasonId"]').selectOption({ label: 'Dialysis' });
+  await page.locator('[data-field="amount"]').fill('30000');
   await page.locator('[data-field="ppRecommend"] button.yes').click();
   await page.locator('[data-field="msRecommend"] button.yes').click();
   await page.locator('[data-field="mpRecommend"] button.yes').click();

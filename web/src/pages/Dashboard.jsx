@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
 import { DeskHead, formatDate } from '../components/ui';
+import AmountSummary from '../components/AmountSummary';
 
 export default function Dashboard() {
   const { user, serverDate } = useAuth();
@@ -78,6 +79,10 @@ export default function Dashboard() {
           Review {counts.pending} pending {counts.pending === 1 ? 'application' : 'applications'}
         </button>
       )}
+
+      {/* Money rolled up by block and panchayat. MLA only — the endpoint is
+          role-gated on the server too, not just hidden here. */}
+      {!isSupervisor && <AmountSummary />}
     </>
   );
 }

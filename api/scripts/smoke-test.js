@@ -118,6 +118,7 @@ const AADHAAR_B = '999971658847';
     pinCode: '755001',
     supportTypeId: eduType.id,
     supportReasonId: eduReasons[0].id,
+    amount: '10000',
     ppRecommend: 'yes',
     msRecommend: 'yes',
     mpRecommend: 'yes',
@@ -393,12 +394,109 @@ const AADHAAR_B = '999971658847';
   check('list rows carry the support type', r.body.applications.every((a) => !!a.supportType));
   check('list rows carry the support reason', r.body.applications.every((a) => !!a.supportReason));
 
+  section('Amount validation');
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, amount: '' });
+  check('missing amount is rejected', r.status === 400, r.body);
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, amount: '0' });
+  check('zero amount is rejected', r.status === 400, r.body);
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, amount: 'abc' });
+  check('non-numeric amount is rejected', r.status === 400, r.body);
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, amount: '12.345' });
+  check('three decimal places rejected', r.status === 400, r.body);
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, amount: '99999999999' });
+  check('absurd amount is rejected', r.status === 400, r.body);
+
+  section('Amount rollup by block and panchayat');
+  // Build a known set of figures from scratch in the Rasulpur block, which no
+  // earlier test has touched, so the arithmetic can be asserted exactly.
+  const sup2b = makeClient();
+  await sup2b('POST', '/api/auth/login', { username: 'sup.rasul', password: 'Sup@2026#RSD' });
+  const rsdPanchayats = (await sup2b('GET', `/api/master/panchayats?blockId=${blockRsd.id}`)).body.panchayats;
+
+  const RSD_AADHAAR = ['999952981172', '999928967699', '999985285556'];
+  const plan = [
+    { aadhaar: RSD_AADHAAR[0], panchayat: rsdPanchayats[0], amount: '25000', decide: 'accepted' },
+    { aadhaar: RSD_AADHAAR[1], panchayat: rsdPanchayats[0], amount: '15000', decide: null },
+    { aadhaar: RSD_AADHAAR[2], panchayat: rsdPanchayats[1], amount: '40000', decide: 'rejected' },
+  ];
+
+  const madeIds = [];
+  for (const item of plan) {
+    const res = await sup2b('POST', '/api/applications', {
+      ...badBase,
+      aadhaar: item.aadhaar,
+      fullName: `RSD Applicant ${item.amount}`,
+      blockId: blockRsd.id,
+      panchayatId: item.panchayat.id,
+      amount: item.amount,
+      acknowledgeDuplicate: true,
+    });
+    if (res.status !== 201) { check(`seed ${item.amount} created`, false, res.body); continue; }
+    madeIds.push({ id: res.body.application.id, decide: item.decide });
+  }
+  check('three Rasulpur applications created', madeIds.length === 3, madeIds.length);
+
+  for (const m of madeIds) {
+    if (!m.decide) continue;
+    await mla('PATCH', `/api/applications/${m.id}/status`, {
+      status: m.decide,
+      rejectionReason: m.decide === 'rejected' ? 'Not eligible.' : undefined,
+    });
+  }
+
+  r = await mla('GET', '/api/applications/summary');
+  check('summary endpoint responds', r.status === 200, r.body);
+
+  const rsd = r.body.blocks.find((b) => b.blockId === blockRsd.id);
+  check('Rasulpur block appears in the rollup', !!rsd, r.body.blocks.map((b) => b.blockName));
+
+  check('block accepted total', rsd.accepted === 25000, rsd.accepted);
+  check('block pending total', rsd.pending === 15000, rsd.pending);
+  check('block rejected total', rsd.rejected === 40000, rsd.rejected);
+  check('block requested = accepted + pending', rsd.requested === 40000, rsd.requested);
+  check('rejected is NOT counted in requested',
+    rsd.requested === rsd.accepted + rsd.pending && rsd.requested !== rsd.accepted + rsd.pending + rsd.rejected,
+    { requested: rsd.requested, rejected: rsd.rejected });
+
+  const p1 = rsd.panchayats.find((p) => p.panchayatId === rsdPanchayats[0].id);
+  const p2 = rsd.panchayats.find((p) => p.panchayatId === rsdPanchayats[1].id);
+  check('panchayat 1 requested is 40000', p1 && p1.requested === 40000, p1 && p1.requested);
+  check('panchayat 1 accepted is 25000', p1 && p1.accepted === 25000, p1 && p1.accepted);
+  check('panchayat 1 pending is 15000', p1 && p1.pending === 15000, p1 && p1.pending);
+  check('panchayat 1 has no rejected amount', p1 && p1.rejected === 0, p1 && p1.rejected);
+  check('panchayat 2 requested is 0 (its only form was rejected)', p2 && p2.requested === 0, p2 && p2.requested);
+  check('panchayat 2 rejected is 40000', p2 && p2.rejected === 40000, p2 && p2.rejected);
+
+  const sumPanchayats = rsd.panchayats.reduce((t, p) => t + p.requested, 0);
+  check('panchayat totals add up to the block total', sumPanchayats === rsd.requested,
+    { sumPanchayats, block: rsd.requested });
+
+  const sumBlocks = r.body.blocks.reduce((t, b) => t + b.requested, 0);
+  check('block totals add up to the overall total', sumBlocks === r.body.overall.requested,
+    { sumBlocks, overall: r.body.overall.requested });
+  check('overall requested = overall accepted + pending',
+    r.body.overall.requested === r.body.overall.accepted + r.body.overall.pending);
+
+  check('counts are returned alongside amounts',
+    rsd.acceptedCount === 1 && rsd.pendingCount === 1 && rsd.rejectedCount === 1,
+    { a: rsd.acceptedCount, p: rsd.pendingCount, x: rsd.rejectedCount });
+
+  r = await sup('GET', '/api/applications/summary');
+  check('a supervisor cannot read the rollup', r.status === 403, r.status);
+
+  section('Amount on the record');
+  r = await sup('GET', `/api/applications/${appAId}`);
+  check('detail carries the amount', r.body.application.amount === 10000, r.body.application.amount);
+  r = await sup('GET', '/api/applications');
+  check('list rows carry the amount', r.body.applications.every((a) => typeof a.amount === 'number'));
+
   section('CSV export');
   const csv = await mla('GET', '/api/applications/export.csv', undefined, { raw: true });
   check('CSV downloads', csv.status === 200 && csv.body.includes('Reference No'), csv.status);
   check('CSV contains a reference number', csv.body.includes(refA));
   check('CSV does not contain a full Aadhaar number', !csv.body.includes(AADHAAR_A));
   check('CSV has an MLA Comment column', csv.body.includes('MLA Comment'));
+  check('CSV has an Amount column', csv.body.includes('Amount'));
   check('CSV includes the accept comment', csv.body.includes('Approved for Rs. 10,000'));
 
   section('Audit trail');

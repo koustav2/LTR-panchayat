@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, Field, YesNo, Banner, Modal, formatDate } from '../components/ui';
+import { DeskHead, Field, YesNo, Banner, Modal, formatDate, formatMoney } from '../components/ui';
 import { PhotoUploader, DocumentUploader } from '../components/Uploader';
 
 const DRAFT_KEY = 'lrt.sahayak.draft.v1';
@@ -17,6 +17,7 @@ const EMPTY = {
   pinCode: '',
   supportTypeId: '',
   supportReasonId: '',
+  amount: '',
   ppRecommend: '',
   ppComment: '',
   msRecommend: '',
@@ -102,6 +103,16 @@ export default function SahayakForm() {
     setForm((f) => ({ ...f, [key]: value }));
     setErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
   }, []);
+
+  // Echo the typed amount back formatted. An extra zero is very easy to type
+  // and very hard to spot in a bare number field.
+  const amountPreview = useMemo(() => {
+    const raw = form.amount.replace(/[,\s₹]/g, '');
+    if (!raw || !/^\d+(\.\d{1,2})?$/.test(raw)) return '';
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    return formatMoney(n, { compact: n % 1 === 0 });
+  }, [form.amount]);
 
   const panchayats = useMemo(() => {
     if (!master || !form.blockId) return [];
@@ -190,6 +201,12 @@ export default function SahayakForm() {
     if (!form.supportTypeId) e.supportTypeId = 'Choose the type of support.';
     if (!form.supportReasonId) e.supportReasonId = 'Choose the reason for support.';
 
+    const amt = form.amount.replace(/[,\s₹]/g, '');
+    if (amt === '') e.amount = 'Enter the amount requested.';
+    else if (!/^\d+(\.\d{1,2})?$/.test(amt)) e.amount = 'Enter a number, up to two decimal places.';
+    else if (Number(amt) <= 0) e.amount = 'Amount must be greater than zero.';
+    else if (Number(amt) > 100000000) e.amount = 'Amount looks too large.';
+
     [
       ['pp', 'Panchayat Prabhari'],
       ['ms', 'Mandal Sabhapati'],
@@ -229,6 +246,7 @@ export default function SahayakForm() {
         pinCode: digits(form.pinCode),
         supportTypeId: Number(form.supportTypeId),
         supportReasonId: Number(form.supportReasonId),
+        amount: form.amount.replace(/[,\s₹]/g, ''),
         ppRecommend: form.ppRecommend,
         ppComment: form.ppComment,
         msRecommend: form.msRecommend,
@@ -511,6 +529,26 @@ export default function SahayakForm() {
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
+          </Field>
+
+          <Field
+            label="Amount Requested"
+            required
+            error={errors.amount}
+            hint={amountPreview || 'In rupees'}
+          >
+            <div className="amount-input">
+              <span className="rupee" aria-hidden="true">₹</span>
+              <input
+                data-field="amount"
+                type="tel"
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0"
+                value={form.amount}
+                onChange={(e) => set('amount', e.target.value.replace(/[^\d.,]/g, ''))}
+              />
+            </div>
           </Field>
         </div>
       </details>

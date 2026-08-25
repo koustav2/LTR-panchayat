@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, StatusBadge, Empty, Skeletons, Banner, formatDate } from '../components/ui';
+import { DeskHead, StatusBadge, Empty, Skeletons, Banner, formatDate, formatMoney } from '../components/ui';
 
 const FILTERS = [
   { key: '', label: 'All' },
@@ -143,6 +143,7 @@ export default function FormList() {
                 <div className="row-meta">
                   {a.supportType} · {a.supportReason}
                 </div>
+                <div className="row-amount">{formatMoney(a.amount)}</div>
                 <div className="row-meta">
                   {a.panchayatName}, {a.blockName} · {formatDate(a.submittedAt)}
                 </div>
@@ -168,6 +169,7 @@ export default function FormList() {
                   <th>Reference No.</th>
                   <th>Applicant</th>
                   <th>Support</th>
+                  <th className="right">Amount</th>
                   <th>Panchayat</th>
                   {isMla && <th>Submitted by</th>}
                   <th>Submitted</th>
@@ -197,6 +199,7 @@ export default function FormList() {
                       <div>{a.supportType}</div>
                       <div className="c-sub">{a.supportReason}</div>
                     </td>
+                    <td className="num right c-amount">{formatMoney(a.amount)}</td>
                     <td>
                       <div>{a.panchayatName}</div>
                       <div className="c-sub">{a.blockName}</div>

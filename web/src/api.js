@@ -55,6 +55,7 @@ export const api = {
     });
     return request('GET', `/applications?${qs.toString()}`);
   },
+  summary: () => request('GET', '/applications/summary'),
   getApplication: (id, reveal) =>
     request('GET', `/applications/${id}${reveal ? '?revealAadhaar=true' : ''}`),
   createApplication: (payload) => request('POST', '/applications', payload),

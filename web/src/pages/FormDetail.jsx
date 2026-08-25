@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, StatusBadge, Banner, Modal, Field, formatDate } from '../components/ui';
+import { DeskHead, StatusBadge, Banner, Modal, Field, formatDate, formatMoney } from '../components/ui';
 
 function Row({ k, v, full }) {
   return (
@@ -144,6 +144,10 @@ export default function FormDetail() {
             <div>
               <div className="k">Reason of Support</div>
               <div className="support-reason">{app.supportReason}</div>
+            </div>
+            <div className="amount-cell">
+              <div className="k">Amount Requested</div>
+              <div className="support-amount">{formatMoney(app.amount, { compact: app.amount % 1 === 0 })}</div>
             </div>
           </div>
         </div>
