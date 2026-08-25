@@ -2,7 +2,17 @@ services:
   db:
     image: mysql:8.0
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    # Tuned for a small shared VPS. Left at its defaults MySQL 8 sizes the
+    # buffer pool against total host RAM and can push a busy box into the OOM
+    # killer — which would take down whatever else is running on it.
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --innodb-buffer-pool-size=192M
+      --performance-schema=OFF
+      --max-connections=50
+      --skip-log-bin
+    mem_limit: 576m
+    memswap_limit: 576m
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME}
@@ -22,6 +32,7 @@ services:
   api:
     build: ./api
     restart: unless-stopped
+    mem_limit: 320m
     depends_on:
       db:
         condition: service_healthy
@@ -54,8 +65,12 @@ services:
         VITE_BUILD_ID: ${VITE_BUILD_ID:-local}
     restart: unless-stopped
     depends_on: [api]
+    mem_limit: 64m
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      # Bound to loopback on purpose. The host's nginx terminates TLS and
+      # proxies to this port, so the app is never reachable directly over
+      # plain HTTP from the internet.
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
     networks: [lrt]
 
 networks:
