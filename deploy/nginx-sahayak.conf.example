@@ -6,7 +6,7 @@
 #   sudo nginx -t && sudo systemctl reload nginx
 #
 # Then add TLS:
-#   sudo certbot --nginx -d sahayak.example.com
+#   sudo certbot --nginx -d lrt.truehr.co.in
 #
 # certbot rewrites this file to add the 443 block and the redirect. Nothing
 # here touches any other site on the server.
@@ -14,7 +14,7 @@
 server {
     listen 80;
     listen [::]:80;
-    server_name sahayak.example.com;          # <-- change this
+    server_name lrt.truehr.co.in;          # <-- change this
 
     # Uploads travel through here: 5 MB per file plus multipart overhead.
     client_max_body_size 12M;
