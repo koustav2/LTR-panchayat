@@ -612,12 +612,8 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 
 /* ------------------------------------------------- amount + summary ------ */
 
-.amount-input { position: relative; }
-.amount-input .rupee {
-  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
-  font-size: 16px; font-weight: 600; color: var(--slate-500); pointer-events: none;
-}
-.amount-input input { padding-left: 32px; font-variant-numeric: tabular-nums; font-weight: 600; }
+/* Plain number entry — no currency adornment inside the field. */
+.field input.amount-field { font-variant-numeric: tabular-nums; font-weight: 600; }
 
 .support-callout .amount-cell { grid-column: 1 / -1; border-top: 1px solid var(--green-100); padding-top: 11px; }
 .support-amount { font-size: 22px; font-weight: 700; color: var(--green-800); font-variant-numeric: tabular-nums; }

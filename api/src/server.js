@@ -17,7 +17,20 @@ const app = express();
 // Behind nginx / cPanel's proxy, so the client IP comes from X-Forwarded-For.
 app.set('trust proxy', 1);
 
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'same-site' },
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        // blob: is needed for the client-side photo preview — the browser
+        // compresses the camera image to a Blob and shows it before upload.
+        // Helmet's default img-src omits blob:, which silently refuses it.
+        'img-src': ["'self'", 'data:', 'blob:'],
+      },
+    },
+  })
+);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

@@ -43,23 +43,24 @@ const kb = (bytes) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
  * uploaded file back from the server, which always works.
  */
 function PreviewImage({ previewUrl, fileId, alt, className }) {
-  const [src, setSrc] = useState(previewUrl || api.fileUrl(fileId));
+  // A one-way flag, not a swapped `src`. Swapping src meant the reset effect
+  // could put a dead blob URL back after onError had already fired, leaving a
+  // broken image on screen.
+  const [failed, setFailed] = useState(false);
 
+  // Reset only when the inputs genuinely change — never on mount, where the
+  // effect would otherwise run *after* a synchronous load failure and undo it.
+  const prev = useRef({ previewUrl, fileId });
   useEffect(() => {
-    setSrc(previewUrl || api.fileUrl(fileId));
+    if (prev.current.previewUrl !== previewUrl || prev.current.fileId !== fileId) {
+      prev.current = { previewUrl, fileId };
+      setFailed(false);
+    }
   }, [previewUrl, fileId]);
 
-  return (
-    <img
-      className={className}
-      src={src}
-      alt={alt}
-      onError={() => {
-        const fallback = api.fileUrl(fileId);
-        if (src !== fallback) setSrc(fallback);
-      }}
-    />
-  );
+  const src = !failed && previewUrl ? previewUrl : api.fileUrl(fileId);
+
+  return <img className={className} src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
 export function PhotoUploader({ value, onChange, onError }) {

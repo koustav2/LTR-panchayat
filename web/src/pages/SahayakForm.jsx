@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, Field, YesNo, Banner, Modal, formatDate, formatMoney } from '../components/ui';
+import { DeskHead, Field, YesNo, Banner, Modal, formatDate } from '../components/ui';
 import { PhotoUploader, DocumentUploader } from '../components/Uploader';
 
 const DRAFT_KEY = 'lrt.sahayak.draft.v1';
@@ -81,7 +81,14 @@ export default function SahayakForm() {
     if (!hasContent && !photo && documents.length === 0) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({ form, photo, documents }));
+        // Strip blob: preview URLs before persisting. They die with the page,
+        // so a restored draft would point at a URL that can never load. The
+        // file id is enough — the uploader fetches it back from the server.
+        const strip = (f) => (f ? { ...f, preview: null } : f);
+        localStorage.setItem(
+          DRAFT_KEY,
+          JSON.stringify({ form, photo: strip(photo), documents: documents.map(strip) })
+        );
       } catch {
         /* storage full or blocked — the form still works */
       }
@@ -111,7 +118,10 @@ export default function SahayakForm() {
     if (!raw || !/^\d+(\.\d{1,2})?$/.test(raw)) return '';
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return '';
-    return formatMoney(n, { compact: n % 1 === 0 });
+    return new Intl.NumberFormat('en-IN', {
+      minimumFractionDigits: n % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(n);
   }, [form.amount]);
 
   const panchayats = useMemo(() => {
@@ -537,18 +547,16 @@ export default function SahayakForm() {
             error={errors.amount}
             hint={amountPreview || 'In rupees'}
           >
-            <div className="amount-input">
-              <span className="rupee" aria-hidden="true">₹</span>
-              <input
-                data-field="amount"
-                type="tel"
-                inputMode="decimal"
-                autoComplete="off"
-                placeholder="0"
-                value={form.amount}
-                onChange={(e) => set('amount', e.target.value.replace(/[^\d.,]/g, ''))}
-              />
-            </div>
+            <input
+              data-field="amount"
+              type="tel"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="0"
+              className="amount-field"
+              value={form.amount}
+              onChange={(e) => set('amount', e.target.value.replace(/[^\d.,]/g, ''))}
+            />
           </Field>
         </div>
       </details>

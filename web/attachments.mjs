@@ -210,7 +210,14 @@ console.log('\nDraft restored after reload still shows the photo');
   // fall back to fetching the uploaded file from the server.
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector('.photo-preview img', { timeout: 15000 });
-  await page.waitForTimeout(1200);
+  // Wait for the image to actually decode rather than sleeping a fixed amount —
+  // the fallback fetch has to round-trip to the server.
+  await page
+    .waitForFunction(() => {
+      const el = document.querySelector('.photo-preview img');
+      return el && el.naturalWidth > 0;
+    }, { timeout: 15000 })
+    .catch(() => {});
   await page.screenshot({ path: `${OUT}a8-restored-draft.png`, fullPage: true });
 
   const w = await page.locator('.photo-preview img').evaluate((el) => el.naturalWidth);
