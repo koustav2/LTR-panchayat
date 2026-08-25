@@ -1,0 +1,62 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      # Runs once, on an empty data directory, in filename order.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [lrt]
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      AADHAAR_ENC_KEY: ${AADHAAR_ENC_KEY}
+      AADHAAR_HASH_PEPPER: ${AADHAAR_HASH_PEPPER}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      UPLOAD_DIR: /data/uploads
+      VALIDATE_AADHAAR_CHECKSUM: ${VALIDATE_AADHAAR_CHECKSUM:-false}
+      DUPLICATE_PENDING_POLICY: ${DUPLICATE_PENDING_POLICY:-warn}
+    volumes:
+      # Uploads live on a volume, outside the web root. nginx never serves them
+      # directly — every read goes through an authenticated API route.
+      - ./data/uploads:/data/uploads
+    networks: [lrt]
+
+  web:
+    build:
+      context: ./web
+      args:
+        # Baked in at build time by Vite.
+        VITE_BUILD_ID: ${VITE_BUILD_ID:-local}
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    networks: [lrt]
+
+networks:
+  lrt:
