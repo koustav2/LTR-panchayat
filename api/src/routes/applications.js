@@ -363,7 +363,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
   try {
     const { where, params } = buildListFilters(req);
     const rows = await query(
-      `SELECT a.reference_no, a.status, a.rejection_reason, a.submitted_at, a.reviewed_at,
+      `SELECT a.reference_no, a.status, a.rejection_reason, a.mla_comment, a.submitted_at, a.reviewed_at,
               a.applicant_name, a.guardian_name, a.phone, bn.aadhaar_last4, a.pin_code,
               bl.name AS block_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
@@ -384,7 +384,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
     );
 
     const headers = [
-      'Reference No', 'Status', 'Rejection Reason', 'Submitted At', 'Reviewed At',
+      'Reference No', 'Status', 'Rejection Reason', 'MLA Comment', 'Submitted At', 'Reviewed At',
       'Name', 'Father/Husband Name', 'Phone', 'Aadhaar (last 4)', 'PIN',
       'Block', 'Panchayat', 'Type of Support', 'Reason of Support',
       'Panchayat Prabhari', 'PP Comment', 'Mandal Sabhapati', 'MS Comment',
@@ -402,7 +402,7 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
     const lines = [headers.map(esc).join(',')];
     rows.forEach((r) => {
       lines.push([
-        r.reference_no, r.status, r.rejection_reason, r.submitted_at, r.reviewed_at,
+        r.reference_no, r.status, r.rejection_reason, r.mla_comment, r.submitted_at, r.reviewed_at,
         r.applicant_name, r.guardian_name, r.phone, r.aadhaar_last4, r.pin_code,
         r.block_name, r.panchayat_name, r.support_type, r.support_reason,
         r.pp_recommend, r.pp_comment, r.ms_recommend, r.ms_comment,
@@ -476,6 +476,7 @@ router.get('/:id', async (req, res, next) => {
         referenceNo: row.reference_no,
         status: row.status,
         rejectionReason: row.rejection_reason,
+        mlaComment: row.mla_comment,
         submittedAt: row.submitted_at,
         submittedByName: row.submitted_by_name,
         reviewedAt: row.reviewed_at,
@@ -496,6 +497,9 @@ router.get('/:id', async (req, res, next) => {
         msComment: row.ms_comment,
         mpRecommend: row.mp_recommend,
         mpComment: row.mp_comment,
+        // A repeat applicant may not re-upload a photo, in which case nothing
+        // of kind 'applicant_photo' is attached to *this* application. The
+        // beneficiary's stored photo is the right thing to show instead.
         photoFileId: row.photo_file_id,
         files: files.map((f) => ({
           id: f.id,
@@ -530,6 +534,13 @@ router.patch('/:id/status', requireRole('mla'), async (req, res, next) => {
       throw new ApiError(400, 'A reason is required when rejecting an application.');
     }
 
+    // Optional note the MLA can leave with either decision. On a rejection the
+    // required reason is separate; this is anything further they want on record.
+    const comment = String(req.body.comment || '').trim();
+    if (comment.length > 2000) {
+      throw new ApiError(400, 'Comment is too long (maximum 2000 characters).');
+    }
+
     const existing = await queryOne('SELECT id, status, reference_no FROM applications WHERE id = ?', [id]);
     if (!existing) throw new ApiError(404, 'Application not found.');
     if (existing.status !== 'pending') {
@@ -538,16 +549,21 @@ router.patch('/:id/status', requireRole('mla'), async (req, res, next) => {
 
     await query(
       `UPDATE applications
-          SET status = ?, rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+          SET status = ?, rejection_reason = ?, mla_comment = ?,
+              reviewed_by = ?, reviewed_at = NOW()
         WHERE id = ? AND status = 'pending'`,
-      [status, status === 'rejected' ? reason : null, req.user.id, id]
+      [status, status === 'rejected' ? reason : null, comment || null, req.user.id, id]
     );
 
     await audit(req, {
       entity: 'application',
       entityId: id,
       action: `review_${status}`,
-      detail: { referenceNo: existing.reference_no, reason: status === 'rejected' ? reason : null },
+      detail: {
+        referenceNo: existing.reference_no,
+        reason: status === 'rejected' ? reason : null,
+        comment: comment || null,
+      },
     });
 
     res.json({ ok: true, status });

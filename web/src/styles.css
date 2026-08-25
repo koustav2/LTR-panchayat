@@ -575,3 +575,37 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 @media (min-width: 1600px) {
   .content { max-width: 1320px; }
 }
+
+/* ---------------------------------------------- detail page additions ---- */
+
+/* The support request, called out so a reviewer sees it before anything else. */
+.support-callout {
+  display: grid; gap: 12px;
+  background: var(--green-50); border: 1px solid var(--green-100);
+  border-radius: 10px; padding: 14px;
+}
+@media (min-width: 640px) { .support-callout { grid-template-columns: 1fr 1fr; } }
+.support-callout .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--green-800); opacity: .75; margin-bottom: 3px; }
+.support-type   { font-size: 18px; font-weight: 700; color: var(--green-800); line-height: 1.25; }
+.support-reason { font-size: 15px; font-weight: 600; color: var(--slate-700); line-height: 1.3; }
+
+/* The MLA's note on a decision. Tinted to match the outcome. */
+.mla-note {
+  margin-top: 9px; padding: 10px 12px; border-radius: 8px; font-size: 14px;
+  background: var(--blue-50); border: 1px solid var(--blue-200); color: var(--blue-700);
+}
+.mla-note.accepted { background: var(--green-50); border-color: var(--green-100); color: var(--green-800); }
+.mla-note.rejected { background: var(--slate-50); border-color: var(--slate-200); color: var(--slate-700); }
+.mla-note:first-child { margin-top: 0; }
+
+.no-files { font-size: 14px; color: var(--slate-400); font-style: italic; }
+
+/* Applicant photo gets a portrait tile; documents stay square thumbnails. */
+.attachments .photo-tile { width: 132px; }
+.attachments .photo-tile img { width: 132px; height: 160px; object-fit: cover; }
+.attachments .filedoc { font-size: 13px; font-weight: 700; color: var(--slate-500); letter-spacing: .04em; }
+
+@media (min-width: 1024px) {
+  .attachments .photo-tile { width: 168px; }
+  .attachments .photo-tile img { width: 168px; height: 204px; }
+}

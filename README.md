@@ -134,6 +134,21 @@ INSERT INTO support_reasons (support_type_id, name, sort_order) VALUES (3, 'Eye 
 
 ## How it works
 
+### Applying a schema change to a running instance
+
+`db/init/` runs **only** against an empty database. An existing deployment needs
+migrations applied by hand:
+
+```bash
+cd /opt/sahayak
+git pull
+docker compose exec -T db mysql -u root -p"$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)" \
+  lrt_panchayat < db/migrations/001_add_mla_comment.sql
+docker compose up -d --build
+```
+
+Every file in `db/migrations/` is safe to run more than once.
+
 ### One Aadhaar, many applications
 
 `beneficiaries` holds one row per Aadhaar, ever. `applications` holds many rows

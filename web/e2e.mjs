@@ -268,7 +268,7 @@ const mla = await session('mla');
   check('Reject is disabled until a reason is typed',
     await page.locator('.modal').getByRole('button', { name: 'Reject' }).isDisabled());
 
-  await page.locator('.modal textarea').fill('Income certificate not attached.');
+  await page.locator('.modal [data-field="rejectReason"]').fill('Income certificate not attached.');
   await page.locator('.modal').getByRole('button', { name: 'Reject' }).click();
   await page.waitForSelector('.detail-group .badge.rejected', { timeout: 10000 });
   await shot(page, '14-rejected.png');

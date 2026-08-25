@@ -156,7 +156,10 @@ CREATE TABLE IF NOT EXISTS applications (
   mp_comment        TEXT NULL,
 
   status            ENUM('pending','accepted','rejected') NOT NULL DEFAULT 'pending',
+  -- Required when rejecting; shown to the supervisor as the reason.
   rejection_reason  TEXT NULL,
+  -- Optional note the MLA can leave when accepting (or alongside a rejection).
+  mla_comment       TEXT NULL,
   reviewed_by       INT UNSIGNED NULL,
   reviewed_at       DATETIME NULL,
 

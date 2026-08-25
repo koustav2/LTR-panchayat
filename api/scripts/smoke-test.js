@@ -344,11 +344,62 @@ const AADHAAR_B = '999971658847';
   r = await sup('GET', '/api/applications?q=Sahoo');
   check('the original name is still searchable', r.body.total >= 1, r.body.total);
 
+  section('MLA comment on a decision');
+  const freshPending = (await mla('GET', '/api/applications?status=pending')).body.applications[0];
+
+  r = await mla('PATCH', `/api/applications/${freshPending.id}/status`, {
+    status: 'accepted',
+    comment: 'Approved for Rs. 10,000 towards hospital bill.',
+  });
+  check('MLA can accept with a comment', r.status === 200, r.body);
+
+  r = await mla('GET', `/api/applications/${freshPending.id}`);
+  check('the accept comment is stored and returned',
+    r.body.application.mlaComment === 'Approved for Rs. 10,000 towards hospital bill.',
+    r.body.application.mlaComment);
+  check('an accepted application has no rejection reason',
+    r.body.application.rejectionReason === null, r.body.application.rejectionReason);
+
+  r = await sup('GET', `/api/applications/${freshPending.id}`);
+  check('the supervisor sees the MLA comment on their own form',
+    r.body.application.mlaComment === 'Approved for Rs. 10,000 towards hospital bill.');
+
+  // A rejection keeps the required reason and the optional comment separate.
+  const nextPending = (await mla('GET', '/api/applications?status=pending')).body.applications[0];
+  r = await mla('PATCH', `/api/applications/${nextPending.id}/status`, {
+    status: 'rejected',
+    rejectionReason: 'Bank details missing.',
+    comment: 'Ask the supervisor to resubmit with a passbook copy.',
+  });
+  check('MLA can reject with both a reason and a comment', r.status === 200, r.body);
+
+  r = await mla('GET', `/api/applications/${nextPending.id}`);
+  check('rejection reason is stored', r.body.application.rejectionReason === 'Bank details missing.');
+  check('rejection comment is stored separately',
+    r.body.application.mlaComment === 'Ask the supervisor to resubmit with a passbook copy.');
+
+  section('Attachments visible on the detail page');
+  r = await mla('GET', `/api/applications/${appAId}`);
+  check('detail returns a files array', Array.isArray(r.body.application.files));
+  check('detail exposes the beneficiary photo id field',
+    'photoFileId' in r.body.application);
+
+  section('Support type is present on every view');
+  r = await mla('GET', `/api/applications/${appAId}`);
+  check('detail carries the support type', !!r.body.application.supportType, r.body.application.supportType);
+  check('detail carries the support reason', !!r.body.application.supportReason);
+
+  r = await sup('GET', '/api/applications');
+  check('list rows carry the support type', r.body.applications.every((a) => !!a.supportType));
+  check('list rows carry the support reason', r.body.applications.every((a) => !!a.supportReason));
+
   section('CSV export');
   const csv = await mla('GET', '/api/applications/export.csv', undefined, { raw: true });
   check('CSV downloads', csv.status === 200 && csv.body.includes('Reference No'), csv.status);
   check('CSV contains a reference number', csv.body.includes(refA));
   check('CSV does not contain a full Aadhaar number', !csv.body.includes(AADHAAR_A));
+  check('CSV has an MLA Comment column', csv.body.includes('MLA Comment'));
+  check('CSV includes the accept comment', csv.body.includes('Approved for Rs. 10,000'));
 
   section('Audit trail');
   r = await mla('GET', '/api/health');

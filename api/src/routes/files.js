@@ -72,6 +72,10 @@ router.post(
       }
 
       const stored = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ALLOWED[detected]}`;
+      // Re-assert the directory on every write. It is created at boot too, but
+      // a bind mount that goes away — or an operator moving the folder — would
+      // otherwise turn every upload into a 500 until the process restarts.
+      await fs.promises.mkdir(config.uploadDir, { recursive: true });
       await fs.promises.writeFile(path.join(config.uploadDir, stored), req.file.buffer);
 
       const result = await query(

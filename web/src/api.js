@@ -58,8 +58,8 @@ export const api = {
   getApplication: (id, reveal) =>
     request('GET', `/applications/${id}${reveal ? '?revealAadhaar=true' : ''}`),
   createApplication: (payload) => request('POST', '/applications', payload),
-  setStatus: (id, status, rejectionReason) =>
-    request('PATCH', `/applications/${id}/status`, { status, rejectionReason }),
+  setStatus: (id, status, rejectionReason, comment) =>
+    request('PATCH', `/applications/${id}/status`, { status, rejectionReason, comment }),
 
   uploadFile: (file, kind) => {
     const fd = new FormData();

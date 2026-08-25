@@ -34,7 +34,9 @@ export default function FormDetail() {
   const [error, setError] = useState('');
   const [revealed, setRevealed] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const [reason, setReason] = useState('');
+  const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -58,14 +60,17 @@ export default function FormDetail() {
   async function decide(status, rejectionReason) {
     setBusy(true);
     try {
-      await api.setStatus(id, status, rejectionReason);
+      await api.setStatus(id, status, rejectionReason, comment.trim());
       setRejecting(false);
+      setAccepting(false);
       setReason('');
+      setComment('');
       setNotice(status === 'accepted' ? 'Application accepted.' : 'Application rejected.');
       await load(revealed);
     } catch (err) {
       setError(err.message);
       setRejecting(false);
+      setAccepting(false);
     } finally {
       setBusy(false);
     }
@@ -76,7 +81,15 @@ export default function FormDetail() {
 
   const isMla = user.role === 'mla';
   const canDecide = isMla && app.status === 'pending';
-  const photo = app.files.find((f) => f.kind === 'applicant_photo');
+  // A repeat applicant often does not re-upload their photo, so nothing of
+  // kind 'applicant_photo' is attached to this particular application. Fall
+  // back to the photo held on the beneficiary record.
+  const attachedPhoto = app.files.find((f) => f.kind === 'applicant_photo');
+  const photo =
+    attachedPhoto ||
+    (app.photoFileId
+      ? { id: app.photoFileId, originalName: 'Applicant photo', mimeType: 'image/jpeg' }
+      : null);
   const documents = app.files.filter((f) => f.kind === 'document');
 
   return (
@@ -103,13 +116,37 @@ export default function FormDetail() {
           </div>
         </div>
 
-        {app.status === 'rejected' && (
+        {(app.status === 'rejected' || app.mlaComment) && (
           <div className="detail-group">
-            <div className="row-reject" style={{ marginTop: 0 }}>
-              <strong>Rejection reason:</strong> {app.rejectionReason}
-            </div>
+            {app.status === 'rejected' && (
+              <div className="row-reject" style={{ marginTop: 0 }}>
+                <strong>Rejection reason:</strong> {app.rejectionReason}
+              </div>
+            )}
+            {app.mlaComment && (
+              <div className={`mla-note ${app.status}`}>
+                <strong>MLA comment:</strong> {app.mlaComment}
+              </div>
+            )}
           </div>
         )}
+
+        {/* What the applicant is actually asking for. Called out as its own
+            section rather than buried in the subtitle — it is the first thing
+            a reviewer looks for. */}
+        <div className="detail-group">
+          <h3>Support Requested</h3>
+          <div className="support-callout">
+            <div>
+              <div className="k">Type of Support</div>
+              <div className="support-type">{app.supportType}</div>
+            </div>
+            <div>
+              <div className="k">Reason of Support</div>
+              <div className="support-reason">{app.supportReason}</div>
+            </div>
+          </div>
+        </div>
 
         <div className="detail-group">
           <h3>Applicant</h3>
@@ -149,29 +186,45 @@ export default function FormDetail() {
           </div>
         </div>
 
-        {(photo || documents.length > 0) && (
-          <div className="detail-group">
-            <h3>Photo &amp; Documents</h3>
+        <div className="detail-group">
+          <h3>Applicant Photo</h3>
+          {photo ? (
             <div className="attachments">
-              {photo && (
-                <a href={api.fileUrl(photo.id)} target="_blank" rel="noreferrer">
-                  <img src={api.fileUrl(photo.id)} alt="Applicant" />
-                  <div className="cap">Photo</div>
-                </a>
-              )}
+              <a
+                className="photo-tile"
+                href={api.fileUrl(photo.id)}
+                target="_blank"
+                rel="noreferrer"
+                title="Open full size"
+              >
+                <img src={api.fileUrl(photo.id)} alt={`Photo of ${app.fullName}`} />
+                <div className="cap">Open full size</div>
+              </a>
+            </div>
+          ) : (
+            <div className="no-files">No photo was uploaded with this application.</div>
+          )}
+        </div>
+
+        <div className="detail-group">
+          <h3>Supporting Documents {documents.length > 0 && `(${documents.length})`}</h3>
+          {documents.length > 0 ? (
+            <div className="attachments">
               {documents.map((d) => (
-                <a key={d.id} href={api.fileUrl(d.id)} target="_blank" rel="noreferrer">
+                <a key={d.id} href={api.fileUrl(d.id)} target="_blank" rel="noreferrer" title={d.originalName}>
                   {d.mimeType.startsWith('image/') ? (
                     <img src={api.fileUrl(d.id)} alt={d.originalName} />
                   ) : (
-                    <div className="filedoc" aria-hidden="true">📄</div>
+                    <div className="filedoc" aria-hidden="true">PDF</div>
                   )}
                   <div className="cap">{d.originalName}</div>
                 </a>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="no-files">No supporting documents were attached.</div>
+          )}
+        </div>
 
       </div>
 
@@ -198,7 +251,7 @@ export default function FormDetail() {
                 <button className="btn btn-danger" disabled={busy} onClick={() => setRejecting(true)}>
                   Reject
                 </button>
-                <button className="btn btn-primary" disabled={busy} onClick={() => decide('accepted')}>
+                <button className="btn btn-primary" disabled={busy} onClick={() => setAccepting(true)}>
                   {busy ? <span className="spinner" /> : 'Accept'}
                 </button>
               </div>
@@ -213,6 +266,34 @@ export default function FormDetail() {
         )}
       </aside>
       </div>
+
+      {accepting && (
+        <Modal
+          title="Accept this application"
+          description="Add a comment if you want one on the record. Optional."
+          onClose={() => setAccepting(false)}
+          actions={
+            <>
+              <button className="btn btn-ghost" onClick={() => setAccepting(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" disabled={busy} onClick={() => decide('accepted')}>
+                {busy ? <span className="spinner" /> : 'Accept'}
+              </button>
+            </>
+          }
+        >
+          <Field label="Comment" hint="Visible to the supervisor who submitted the form">
+            <textarea
+              data-field="mlaComment"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="e.g. Approved for Rs. 10,000 towards hospital bill"
+              autoFocus
+            />
+          </Field>
+        </Modal>
+      )}
 
       {rejecting && (
         <Modal
@@ -236,10 +317,19 @@ export default function FormDetail() {
         >
           <Field label="Reason for rejection" required>
             <textarea
+              data-field="rejectReason"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="e.g. Income certificate not attached"
               autoFocus
+            />
+          </Field>
+          <Field label="Additional comment" hint="Optional">
+            <textarea
+              data-field="mlaComment"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Anything further to record"
             />
           </Field>
         </Modal>
