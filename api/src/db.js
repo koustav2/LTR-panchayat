@@ -26,27 +26,53 @@ async function queryOne(sql, params = []) {
 }
 
 /**
- * Run `fn` inside a transaction. Commits on success, rolls back on any throw.
- * The callback receives the dedicated connection — every statement inside must
- * use it, otherwise it runs on a different connection and outside the
- * transaction.
+ * A deadlock is not a bug and not a user's problem — InnoDB picks a victim and
+ * says so ("try restarting transaction"). Submitting an application does exactly
+ * that: `SELECT ... FOR UPDATE` on an Aadhaar that does not exist yet takes a
+ * *gap* lock, gap locks are mutually compatible, and then every one of those
+ * transactions tries to INSERT into the same gap. Several supervisors filing for
+ * the same new person in the same instant will collide, and one of them loses.
+ *
+ * Losing is fine. Showing a field worker a 500 is not.
  */
-async function transaction(fn) {
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    const result = await fn(conn);
-    await conn.commit();
-    return result;
-  } catch (err) {
+const RETRYABLE = new Set(['ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT']);
+
+/**
+ * Run `fn` inside a transaction. Commits on success, rolls back on any throw,
+ * and retries the whole thing on a lock conflict. The callback receives the
+ * dedicated connection — every statement inside must use it, otherwise it runs
+ * on a different connection and outside the transaction.
+ *
+ * A retry re-runs `fn` from the top against a clean slate: the rollback undid
+ * everything the failed attempt did, including any reference number it had
+ * allocated, so no sequence number is burned and nothing is applied twice.
+ */
+async function transaction(fn, { attempts = 4 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    const conn = await pool.getConnection();
     try {
-      await conn.rollback();
-    } catch {
-      /* connection already gone */
+      await conn.beginTransaction();
+      const result = await fn(conn);
+      await conn.commit();
+      return result;
+    } catch (err) {
+      try {
+        await conn.rollback();
+      } catch {
+        /* connection already gone */
+      }
+      if (!RETRYABLE.has(err.code) || attempt >= attempts) throw err;
+      // Jittered backoff. Without the jitter the losers of one collision line
+      // up and collide with each other again on the way back in.
+      const backoffMs = 15 * attempt + Math.floor(Math.random() * 25);
+      // eslint-disable-next-line no-console
+      console.warn(`[db] ${err.code} on attempt ${attempt}; retrying in ${backoffMs}ms`);
+      await new Promise((r) => setTimeout(r, backoffMs));
+    } finally {
+      // Runs before the next iteration, so a retry always starts from a fresh
+      // connection rather than reusing one mid-rollback.
+      conn.release();
     }
-    throw err;
-  } finally {
-    conn.release();
   }
 }
 

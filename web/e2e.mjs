@@ -3,10 +3,10 @@
  *
  *   node e2e.mjs
  *
- * Drives the real UI the way a supervisor and the MLA would: sign in, fill the
- * Sahayak form, watch the Aadhaar autofill populate on a repeat applicant,
- * submit, search the list, then sign in as the MLA and reject with a reason.
- * Screenshots land in ./screens.
+ * Drives the real UI the way all three roles would: the supervisor signs in,
+ * fills the Sahayak form, watches the Aadhaar autofill populate on a repeat
+ * applicant, submits and searches the list; the Head Sahayak verifies and sends
+ * one form on; the MLA rejects it with a reason. Screenshots land in ./screens.
  */
 
 import { chromium } from 'playwright';
@@ -87,9 +87,13 @@ const sup = await session('supervisor');
   await shot(page, '02-dashboard-supervisor.png');
 
   const tiles = await page.locator('.tile').count();
-  check('supervisor sees both dashboard tiles', tiles === 2, `${tiles} tiles`);
+  check('supervisor sees all three dashboard tiles', tiles === 3, `${tiles} tiles`);
   check('"Sahayak Form" tile is present', await page.getByText('Sahayak Form', { exact: true }).first().isVisible());
   check('"List of Form Uploaded" tile is present', await page.getByText('List of Form Uploaded').first().isVisible());
+  // Scoped to .tiles: the sidebar carries the same words and is display:none at
+  // this width, so an unscoped match resolves to the hidden one.
+  check('"Approval List" tile is present',
+    await page.locator('.tiles').getByText('Approval List').isVisible());
 
   // No horizontal scrolling on a 390px screen.
   const overflow = await page.evaluate(
@@ -107,8 +111,10 @@ const sup = await session('supervisor');
   const inputMode = await page.locator('[data-field="aadhaar"]').getAttribute('inputmode');
   check('Aadhaar field asks for the numeric keypad', inputMode === 'numeric', inputMode);
 
-  // Panchayat must stay locked until a block is chosen.
-  check('Panchayat is disabled before a block is picked',
+  // Block -> Zone -> Panchayat: each level stays locked until its parent is set.
+  check('Zone is disabled before a block is picked',
+    await page.locator('[data-field="zoneId"]').isDisabled());
+  check('Panchayat is disabled before a zone is picked',
     await page.locator('[data-field="panchayatId"]').isDisabled());
   check('Reason of Support is disabled before a type is picked',
     await page.locator('[data-field="supportReasonId"]').isDisabled());
@@ -126,11 +132,41 @@ const sup = await session('supervisor');
 
   await page.locator('[data-field="blockId"]').selectOption({ label: 'Dharmasala' });
   await page.waitForTimeout(150);
-  check('Panchayat unlocks once a block is chosen',
+  check('Zone unlocks once a block is chosen',
+    !(await page.locator('[data-field="zoneId"]').isDisabled()));
+  check('Panchayat is still locked until a zone is chosen',
+    await page.locator('[data-field="panchayatId"]').isDisabled());
+
+  const zoneOptions = await page.locator('[data-field="zoneId"] option').allTextContents();
+  check('Zone list is filtered to that block',
+    zoneOptions.length === 4 && zoneOptions.includes('Dharmasala Zone 1') &&
+    !zoneOptions.some((z) => z.startsWith('Rasulpur')),
+    zoneOptions.join('|'));
+
+  await page.locator('[data-field="zoneId"]').selectOption({ label: 'Dharmasala Zone 2' });
+  await page.waitForTimeout(150);
+  check('Panchayat unlocks once a zone is chosen',
     !(await page.locator('[data-field="panchayatId"]').isDisabled()));
 
-  const panchayatOptions = await page.locator('[data-field="panchayatId"] option').count();
-  check('Panchayat list is filtered to that block', panchayatOptions === 13, `${panchayatOptions} options incl. placeholder`);
+  const panchayatOptions = await page.locator('[data-field="panchayatId"] option').allTextContents();
+  check('Panchayat list is filtered to that zone — ten plus the placeholder',
+    panchayatOptions.length === 11, `${panchayatOptions.length} options`);
+  check('Zone 2 holds panchayats 11-20, not 1-10',
+    panchayatOptions.includes('Dharmasala Panchayat 11') &&
+    !panchayatOptions.includes('Dharmasala Panchayat 1'),
+    panchayatOptions.slice(1, 3).join('|'));
+
+  // Changing the block must clear BOTH levels below it, not just the next one.
+  await page.locator('[data-field="blockId"]').selectOption({ label: 'Rasulpur' });
+  await page.waitForTimeout(150);
+  check('changing block clears the zone',
+    (await page.locator('[data-field="zoneId"]').inputValue()) === '');
+  check('changing block re-locks the panchayat',
+    await page.locator('[data-field="panchayatId"]').isDisabled());
+  await page.locator('[data-field="blockId"]').selectOption({ label: 'Dharmasala' });
+  await page.waitForTimeout(150);
+  await page.locator('[data-field="zoneId"]').selectOption({ label: 'Dharmasala Zone 2' });
+  await page.waitForTimeout(150);
   await page.locator('[data-field="panchayatId"]').selectOption({ index: 1 });
 
   await page.locator('[data-field="supportTypeId"]').selectOption({ label: 'Education' });
@@ -182,8 +218,11 @@ const sup = await session('supervisor');
   check('autofilled PIN', await page.locator('[data-field="pinCode"]').inputValue() === '755001');
   check('autofilled block',
     await page.locator('[data-field="blockId"] option:checked').textContent() === 'Dharmasala');
+  check('autofilled zone',
+    ((await page.locator('[data-field="zoneId"] option:checked').textContent()) || '') === 'Dharmasala Zone 2');
   check('autofilled panchayat',
-    ((await page.locator('[data-field="panchayatId"] option:checked').textContent()) || '').startsWith('Panchayat'));
+    ((await page.locator('[data-field="panchayatId"] option:checked').textContent()) || '')
+      .startsWith('Dharmasala Panchayat'));
   check('autofilled fields are locked until "Edit" is pressed',
     await page.locator('[data-field="fullName"]').getAttribute('readonly') !== null);
   check('previous application count is shown',
@@ -226,8 +265,73 @@ const sup = await session('supervisor');
   check('filtering by Accepted shows the empty state', await page.locator('.empty').isVisible());
   await shot(page, '09-list-empty-filter.png');
 
+  await page.getByRole('button', { name: /^With Head/ }).click();
+  await page.waitForTimeout(900);
+  check('a new form starts with the Head Sahayak', (await page.locator('.row').count()) === 2);
+  check('the badge names the stage',
+    ((await page.locator('.row .badge').first().textContent()) || '').includes('Head'));
+
   check('no console errors during the supervisor journey', errors.length === 0, errors.join(' | '));
   globalThis.__ref = ref;
+}
+
+/* ------------------------------------------------------- Head Sahayak --- */
+
+console.log('\nHead Sahayak journey');
+const headS = await session('head');
+{
+  const { page, errors } = headS;
+
+  await login(page, 'head', 'Head@2026#LRT');
+  await shot(page, '10a-dashboard-head.png');
+
+  const tiles = await page.locator('.tile').count();
+  // The list and the approval list, but no form entry — the head verifies and
+  // hands over; they do not file.
+  check('Head Sahayak sees the list and approval tiles, but no form entry',
+    tiles === 2 && !(await page.getByText('Sahayak Form', { exact: true }).first().isVisible().catch(() => false)),
+    `${tiles} tiles`);
+  check('Head Sahayak sees a queue of 2 waiting on them',
+    (await page.locator('.count.wait .n').textContent()) === '2');
+  check('the ringed tile is the head’s own queue',
+    await page.locator('.count.wait.mine').isVisible());
+
+  await page.getByText('List of Form Uploaded').first().click();
+  await page.waitForSelector('.row', { timeout: 10000 });
+  check('Head Sahayak sees every supervisor’s forms', (await page.locator('.row').count()) === 2);
+  check('the head’s own queue chip comes first, ahead of All',
+    ((await page.locator('.chip').first().textContent()) || '').includes('To verify'),
+    JSON.stringify(await page.locator('.chip').allTextContents()));
+  await shot(page, '10b-list-head.png');
+
+  await page.locator('.row').filter({ hasText: globalThis.__ref }).click();
+  await page.waitForSelector('.pipeline', { timeout: 10000 });
+  check('the progress rail is shown', (await page.locator('.pl-step').count()) === 3);
+  check('the MLA step is not yet reached',
+    await page.locator('.pl-step.todo').isVisible());
+  check('Send to MLA and Reject are offered',
+    (await page.getByRole('button', { name: 'Send to MLA' }).isVisible()) &&
+    (await page.getByRole('button', { name: 'Reject' }).isVisible()));
+  await shot(page, '10c-detail-head.png');
+
+  await page.getByRole('button', { name: 'Send to MLA' }).click();
+  await page.waitForSelector('.modal');
+  check('Send to MLA is disabled until a comment is typed',
+    await page.locator('.modal').getByRole('button', { name: 'Send to MLA' }).isDisabled());
+  await shot(page, '10d-forward-modal.png');
+
+  await page.locator('.modal [data-field="headComment"]').fill('Documents verified at the panchayat office.');
+  await page.locator('.modal').getByRole('button', { name: 'Send to MLA' }).click();
+  await page.waitForSelector('.detail-side .badge.pending_mla', { timeout: 10000 });
+  check('status becomes With MLA',
+    await page.locator('.detail-side .badge.pending_mla').first().isVisible());
+  check('the verification comment is shown on the record',
+    ((await page.locator('.stage-note').textContent()) || '').includes('Documents verified'));
+  check('the head cannot verify the same form twice',
+    !(await page.getByRole('button', { name: 'Send to MLA' }).isVisible()));
+  await shot(page, '10e-forwarded.png');
+
+  check('no console errors during the Head Sahayak journey', errors.length === 0, errors.join(' | '));
 }
 
 /* ------------------------------------------------------------------ MLA */
@@ -241,8 +345,13 @@ const mla = await session('mla');
   await shot(page, '10-dashboard-mla.png');
 
   const tiles = await page.locator('.tile').count();
-  check('MLA sees only the list tile (no form entry)', tiles === 1, `${tiles} tiles`);
-  check('MLA pending count is shown', await page.locator('.count.pending .n').textContent() === '2');
+  // The MLA decides; they neither file nor hand over, so exactly one tile.
+  check('MLA sees only the list tile — no form entry, no approval list',
+    tiles === 1, `${tiles} tiles`);
+  check('MLA sees one form waiting on them',
+    (await page.locator('.count.sent .n').textContent()) === '1');
+  check('MLA sees the other still in verification',
+    (await page.locator('.count.wait .n').textContent()) === '1');
 
   await page.getByText('List of Form Uploaded').first().click();
   await page.waitForSelector('.row', { timeout: 10000 });
@@ -265,9 +374,26 @@ const mla = await session('mla');
   check('Aadhaar can be revealed on demand',
     ((await page.locator('.dl').first().textContent()) || '').includes(AADHAAR));
 
-  check('Accept and Reject are offered on a pending form',
+  check('the head’s comment is visible to the MLA',
+    ((await page.locator('.stage-note').textContent()) || '').includes('Documents verified'));
+  check('Accept and Reject are offered on a verified form',
     (await page.getByRole('button', { name: 'Accept' }).isVisible()) &&
     (await page.getByRole('button', { name: 'Reject' }).isVisible()));
+
+  // The other form is still with the Head Sahayak, so the MLA must be told why
+  // there is nothing to press rather than shown a panel with no buttons.
+  await page.goBack();
+  await page.waitForSelector('.row', { timeout: 10000 });
+  await page.locator('.row').filter({ hasText: 'With Head' }).first().click();
+  await page.waitForSelector('.detail-side', { timeout: 10000 });
+  check('an unverified form offers the MLA no decision buttons',
+    !(await page.getByRole('button', { name: 'Accept' }).isVisible()));
+  check('and says why',
+    ((await page.locator('.detail-side .banner').textContent()) || '').includes('Head Sahayak'));
+  await page.goBack();
+  await page.waitForSelector('.row', { timeout: 10000 });
+  await page.locator('.row').filter({ hasText: globalThis.__ref }).click();
+  await page.waitForSelector('.rec', { timeout: 10000 });
 
   await page.getByRole('button', { name: 'Reject' }).click();
   await page.waitForSelector('.modal');
@@ -277,11 +403,13 @@ const mla = await session('mla');
 
   await page.locator('.modal [data-field="rejectReason"]').fill('Income certificate not attached.');
   await page.locator('.modal').getByRole('button', { name: 'Reject' }).click();
-  await page.waitForSelector('.detail-group .badge.rejected', { timeout: 10000 });
+  await page.waitForSelector('.detail-side .badge.rejected', { timeout: 10000 });
   await shot(page, '14-rejected.png');
-  check('status becomes Rejected', await page.locator('.detail-group .badge.rejected').first().isVisible());
+  check('status becomes Rejected', await page.locator('.detail-side .badge.rejected').first().isVisible());
   check('the reason is shown on the detail page',
     ((await page.locator('.row-reject').textContent()) || '').includes('Income certificate'));
+  check('a rejected form shows no sanctioned amount',
+    ((await page.locator('.money-pair').textContent()) || '').includes('—'));
   check('accept/reject disappear once decided',
     !(await page.getByRole('button', { name: 'Accept' }).isVisible()));
 

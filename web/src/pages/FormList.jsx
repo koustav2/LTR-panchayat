@@ -2,13 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, StatusBadge, Empty, Skeletons, Banner, formatDate, formatMoney } from '../components/ui';
+import {
+  MY_QUEUE, DeskHead, StatusBadge, Empty, Skeletons, Banner,
+  formatDate, formatMoney, formatDelta, deltaDirection,
+} from '../components/ui';
 
+/**
+ * The filter chips, in pipeline order. `mine` marks the stage that is waiting
+ * on the signed-in role — it is pulled to the front and labelled as a task
+ * ("To verify", "To decide") rather than a state, because for that person it is
+ * the only chip that means work.
+ */
 const FILTERS = [
-  { key: '', label: 'All' },
-  { key: 'pending', label: 'Pending' },
-  { key: 'accepted', label: 'Accepted' },
-  { key: 'rejected', label: 'Rejected' },
+  { key: '',              label: 'All' },
+  { key: 'pending_head',  label: 'With Head',     mine: { head_sahayak: 'To verify' } },
+  { key: 'pending_mla',   label: 'With MLA',      mine: { mla: 'To decide' } },
+  { key: 'accepted',      label: 'Accepted' },
+  { key: 'head_rejected', label: 'Head Rejected' },
+  { key: 'rejected',      label: 'MLA Rejected' },
 ];
 
 export default function FormList() {
@@ -60,11 +71,23 @@ export default function FormList() {
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
 
   const isMla = user.role === 'mla';
+  const isSupervisor = user.role === 'supervisor';
+  // Both reviewer roles see every form and can export; only supervisors are
+  // scoped to their own.
+  const isReviewer = !isSupervisor;
+  const queue = MY_QUEUE[user.role];
+
+  // The chip for the stage waiting on this role comes first, so the queue that
+  // matters is the one under the thumb on a phone. A partition, not a sort —
+  // "one element floats to the front" is not a comparison.
+  const chips = queue
+    ? [...FILTERS.filter((f) => f.key === queue), ...FILTERS.filter((f) => f.key !== queue)]
+    : FILTERS;
 
   return (
     <>
       <DeskHead
-        crumb={isMla ? 'All supervisors' : 'Your submissions'}
+        crumb={isSupervisor ? 'Your submissions' : 'All supervisors'}
         title="List of Form Uploaded"
       >
         {data && (
@@ -91,18 +114,18 @@ export default function FormList() {
         </div>
 
         <div className="chips">
-          {FILTERS.map((f) => (
+          {chips.map((f) => (
             <button
               key={f.key || 'all'}
-              className="chip"
+              className={`chip ${f.key && f.key === queue ? 'chip-mine' : ''}`}
               aria-pressed={status === f.key}
               onClick={() => setParam('status', f.key)}
             >
-              {f.label}
+              {(f.mine && f.mine[user.role]) || f.label}
               {data && f.key && <> ({data.counts[f.key]})</>}
             </button>
           ))}
-          {isMla && (
+          {isReviewer && (
             <a
               className="chip"
               href={`/api/applications/export.csv?${new URLSearchParams({ q: debouncedQ, status }).toString()}`}
@@ -125,8 +148,10 @@ export default function FormList() {
         >
           {debouncedQ || status
             ? 'Try a different search or filter.'
-            : user.role === 'supervisor'
+            : isSupervisor
             ? 'Submitted forms will appear here.'
+            : isMla
+            ? 'Forms verified by the Head Sahayak will appear here.'
             : 'Forms submitted by supervisors will appear here.'}
         </Empty>
       ) : (
@@ -143,16 +168,46 @@ export default function FormList() {
                 <div className="row-meta">
                   {a.supportType} · {a.supportReason}
                 </div>
-                <div className="row-amount">{formatMoney(a.amount)}</div>
-                <div className="row-meta">
-                  {a.panchayatName}, {a.blockName} · {formatDate(a.submittedAt)}
+                {/* Requested and sanctioned side by side. Sanctioned stays a
+                    dash until the MLA decides — a zero would read as "granted
+                    nothing", which is a different thing entirely. */}
+                <div className="row-money">
+                  <div>
+                    <span className="ml">Requested</span>
+                    <span className="mv">{formatMoney(a.amount)}</span>
+                  </div>
+                  <div>
+                    <span className="ml">Sanctioned</span>
+                    <span className={`mv ${a.approvedAmount == null ? 'pendingv' : 'granted'}`}>
+                      {a.approvedAmount == null ? '—' : formatMoney(a.approvedAmount)}
+                    </span>
+                  </div>
+                  {formatDelta(a.amount, a.approvedAmount) && (
+                    <div className={`row-delta ${deltaDirection(a.amount, a.approvedAmount)}`}>
+                      {formatDelta(a.amount, a.approvedAmount)}
+                    </div>
+                  )}
                 </div>
-                {user.role === 'mla' && (
+                <div className="row-meta">
+                  {a.panchayatName} · {a.zoneName} · {a.blockName}
+                </div>
+                <div className="row-meta">{formatDate(a.submittedAt)}</div>
+                {isReviewer && (
                   <div className="row-meta">Submitted by {a.submittedByName}</div>
+                )}
+                {a.status === 'accepted' && a.distributedAt && (
+                  <div className="row-done">
+                    Distributed {formatDate(a.distributedAt)}
+                  </div>
+                )}
+                {a.status === 'head_rejected' && a.headComment && (
+                  <div className="row-reject">
+                    <strong>Head Sahayak:</strong> {a.headComment}
+                  </div>
                 )}
                 {a.status === 'rejected' && a.rejectionReason && (
                   <div className="row-reject">
-                    <strong>Reason:</strong> {a.rejectionReason}
+                    <strong>MLA reason:</strong> {a.rejectionReason}
                   </div>
                 )}
               </button>
@@ -169,9 +224,11 @@ export default function FormList() {
                   <th>Reference No.</th>
                   <th>Applicant</th>
                   <th>Support</th>
-                  <th className="right">Amount</th>
+                  <th className="right">Requested</th>
+                  <th className="right">Sanctioned</th>
                   <th>Panchayat</th>
-                  {isMla && <th>Submitted by</th>}
+                  <th>Zone</th>
+                  {isReviewer && <th>Submitted by</th>}
                   <th>Submitted</th>
                   <th>Status</th>
                 </tr>
@@ -189,9 +246,14 @@ export default function FormList() {
                     <td>
                       <div className="c-name">{a.fullName}</div>
                       <div className="c-sub">{a.guardianName}</div>
+                      {a.status === 'head_rejected' && a.headComment && (
+                        <div className="c-reject">
+                          <strong>Head Sahayak:</strong> {a.headComment}
+                        </div>
+                      )}
                       {a.status === 'rejected' && a.rejectionReason && (
                         <div className="c-reject">
-                          <strong>Reason:</strong> {a.rejectionReason}
+                          <strong>MLA reason:</strong> {a.rejectionReason}
                         </div>
                       )}
                     </td>
@@ -199,12 +261,27 @@ export default function FormList() {
                       <div>{a.supportType}</div>
                       <div className="c-sub">{a.supportReason}</div>
                     </td>
-                    <td className="num right c-amount">{formatMoney(a.amount)}</td>
+                    <td className="num right c-requested">{formatMoney(a.amount)}</td>
+                    <td className="num right c-sanctioned">
+                      {a.approvedAmount == null ? (
+                        <span className="c-pendingv">—</span>
+                      ) : (
+                        <>
+                          {formatMoney(a.approvedAmount)}
+                          {formatDelta(a.amount, a.approvedAmount) && (
+                            <div className={`c-delta ${deltaDirection(a.amount, a.approvedAmount)}`}>
+                              {formatDelta(a.amount, a.approvedAmount)}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td>{a.panchayatName}</td>
                     <td>
-                      <div>{a.panchayatName}</div>
+                      <div>{a.zoneName}</div>
                       <div className="c-sub">{a.blockName}</div>
                     </td>
-                    {isMla && <td>{a.submittedByName}</td>}
+                    {isReviewer && <td>{a.submittedByName}</td>}
                     <td className="num">{formatDate(a.submittedAt)}</td>
                     <td><StatusBadge status={a.status} /></td>
                   </tr>

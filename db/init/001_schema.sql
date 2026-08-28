@@ -19,16 +19,39 @@ CREATE TABLE IF NOT EXISTS blocks (
   UNIQUE KEY uq_blocks_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS panchayats (
+-- Zones sit between a block and its panchayats. The form loads them as a
+-- dependent dropdown: pick a block, the zones load; pick a zone, the panchayats
+-- load.
+CREATE TABLE IF NOT EXISTS zones (
   id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
   block_id    INT UNSIGNED NOT NULL,
   name        VARCHAR(120) NOT NULL,
   sort_order  INT NOT NULL DEFAULT 0,
   is_active   TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_panchayat_block_name (block_id, name),
+  UNIQUE KEY uq_zone_block_name (block_id, name),
+  KEY ix_zone_block (block_id),
+  CONSTRAINT fk_zone_block FOREIGN KEY (block_id) REFERENCES blocks (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- `block_id` is derivable through zone_id and is kept anyway: nearly every
+-- query wants the block, and carrying it here avoids a three-table join on the
+-- hot list and rollup paths. The seed keeps the two consistent, and the create
+-- handler validates zone.block_id and panchayat.zone_id on every submission, so
+-- a drifted row cannot be referenced by a new application.
+CREATE TABLE IF NOT EXISTS panchayats (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  block_id    INT UNSIGNED NOT NULL,
+  zone_id     INT UNSIGNED NOT NULL,
+  name        VARCHAR(120) NOT NULL,
+  sort_order  INT NOT NULL DEFAULT 0,
+  is_active   TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_panchayat_zone_name (zone_id, name),
   KEY ix_panchayat_block (block_id),
-  CONSTRAINT fk_panchayat_block FOREIGN KEY (block_id) REFERENCES blocks (id)
+  KEY ix_panchayat_zone (zone_id),
+  CONSTRAINT fk_panchayat_block FOREIGN KEY (block_id) REFERENCES blocks (id),
+  CONSTRAINT fk_panchayat_zone  FOREIGN KEY (zone_id)  REFERENCES zones (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS support_types (
@@ -61,7 +84,8 @@ CREATE TABLE IF NOT EXISTS users (
   full_name      VARCHAR(120) NOT NULL,
   username       VARCHAR(60)  NOT NULL,
   password_hash  VARCHAR(255) NOT NULL,
-  role           ENUM('supervisor','mla') NOT NULL,
+  -- supervisor files, head_sahayak verifies, mla decides. Seeded by SQL only.
+  role           ENUM('supervisor','head_sahayak','mla') NOT NULL,
   block_id       INT UNSIGNED NULL,
   is_active      TINYINT(1) NOT NULL DEFAULT 1,
   last_login_at  DATETIME NULL,
@@ -79,7 +103,9 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS files (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  kind          ENUM('applicant_photo','document') NOT NULL,
+  -- distribution_photo is the proof-of-handover shot taken when a Sahayak
+  -- records that an approved application's money reached the applicant.
+  kind          ENUM('applicant_photo','document','distribution_photo') NOT NULL,
   original_name VARCHAR(255) NOT NULL,
   stored_name   VARCHAR(160) NOT NULL,
   mime_type     VARCHAR(100) NOT NULL,
@@ -106,6 +132,7 @@ CREATE TABLE IF NOT EXISTS beneficiaries (
   guardian_name  VARCHAR(120) NOT NULL,
   phone          CHAR(10) NOT NULL,
   block_id       INT UNSIGNED NOT NULL,
+  zone_id        INT UNSIGNED NOT NULL,
   panchayat_id   INT UNSIGNED NOT NULL,
   pin_code       CHAR(6) NOT NULL,
   photo_file_id  INT UNSIGNED NULL,
@@ -117,6 +144,7 @@ CREATE TABLE IF NOT EXISTS beneficiaries (
   KEY ix_beneficiary_name (full_name),
   KEY ix_beneficiary_phone (phone),
   CONSTRAINT fk_beneficiary_block     FOREIGN KEY (block_id)      REFERENCES blocks (id),
+  CONSTRAINT fk_beneficiary_zone      FOREIGN KEY (zone_id)       REFERENCES zones (id),
   CONSTRAINT fk_beneficiary_panchayat FOREIGN KEY (panchayat_id)  REFERENCES panchayats (id),
   CONSTRAINT fk_beneficiary_photo     FOREIGN KEY (photo_file_id) REFERENCES files (id),
   CONSTRAINT fk_beneficiary_creator   FOREIGN KEY (created_by)    REFERENCES users (id)
@@ -142,6 +170,7 @@ CREATE TABLE IF NOT EXISTS applications (
   guardian_name     VARCHAR(120) NOT NULL,
   phone             CHAR(10) NOT NULL,
   block_id          INT UNSIGNED NOT NULL,
+  zone_id           INT UNSIGNED NOT NULL,
   panchayat_id      INT UNSIGNED NOT NULL,
   pin_code          CHAR(6) NOT NULL,
 
@@ -150,6 +179,10 @@ CREATE TABLE IF NOT EXISTS applications (
   -- Amount of support sought, in rupees. DECIMAL, never FLOAT — money summed
   -- as binary floating point drifts, and these totals are reported upward.
   amount            DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  -- What the MLA actually sanctions. NULL until they decide. May be higher or
+  -- lower than `amount` — every total describing money *granted* reads this
+  -- column, and every total describing money *asked for* reads `amount`.
+  approved_amount   DECIMAL(12,2) NULL,
 
   pp_recommend      ENUM('yes','no') NOT NULL,
   pp_comment        TEXT NULL,
@@ -158,13 +191,35 @@ CREATE TABLE IF NOT EXISTS applications (
   mp_recommend      ENUM('yes','no') NOT NULL,
   mp_comment        TEXT NULL,
 
-  status            ENUM('pending','accepted','rejected') NOT NULL DEFAULT 'pending',
+  -- Head Sahayak verification. A comment is required whether they forward the
+  -- application to the MLA or reject it, so there is always a record of why.
+  head_comment      TEXT NULL,
+  head_reviewed_by  INT UNSIGNED NULL,
+  head_reviewed_at  DATETIME NULL,
+
+  -- The three-stage pipeline, in order:
+  --   pending_head   filed, waiting on the Head Sahayak
+  --   pending_mla    forwarded by the Head Sahayak, waiting on the MLA
+  --   head_rejected  turned down by the Head Sahayak — terminal, never reaches the MLA for a decision
+  --   accepted       MLA accepted; approved_amount is set
+  --   rejected       MLA rejected; rejection_reason is set
+  status            ENUM('pending_head','pending_mla','head_rejected','accepted','rejected')
+                      NOT NULL DEFAULT 'pending_head',
   -- Required when rejecting; shown to the supervisor as the reason.
   rejection_reason  TEXT NULL,
   -- Optional note the MLA can leave when accepting (or alongside a rejection).
   mla_comment       TEXT NULL,
   reviewed_by       INT UNSIGNED NULL,
   reviewed_at       DATETIME NULL,
+
+  -- Handover. Deliberately NOT a sixth status: distribution is a separate axis
+  -- from the decision, and folding it into `status` would take distributed
+  -- money out of the `accepted` totals the MLA reports upward. An accepted
+  -- application is either undistributed (distributed_at IS NULL) or
+  -- distributed, and stays accepted either way.
+  distributed_at    DATETIME NULL,
+  distributed_by    INT UNSIGNED NULL,
+  distribution_photo_file_id INT UNSIGNED NULL,
 
   submitted_by      INT UNSIGNED NOT NULL,
   submitted_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -179,12 +234,21 @@ CREATE TABLE IF NOT EXISTS applications (
   KEY ix_app_applicant_name (applicant_name),
   KEY ix_app_rollup (block_id, panchayat_id, status),
   KEY ix_app_phone (phone),
+  KEY ix_app_head_reviewer (head_reviewed_by),
+  KEY ix_app_zone (zone_id),
+  KEY ix_app_zone_rollup (block_id, zone_id, panchayat_id, status),
+  -- Drives the approval list: accepted forms, undistributed first.
+  KEY ix_app_distribution (status, distributed_at),
   CONSTRAINT fk_app_beneficiary FOREIGN KEY (beneficiary_id)    REFERENCES beneficiaries (id),
   CONSTRAINT fk_app_block       FOREIGN KEY (block_id)          REFERENCES blocks (id),
   CONSTRAINT fk_app_panchayat   FOREIGN KEY (panchayat_id)      REFERENCES panchayats (id),
   CONSTRAINT fk_app_type        FOREIGN KEY (support_type_id)   REFERENCES support_types (id),
   CONSTRAINT fk_app_reason      FOREIGN KEY (support_reason_id) REFERENCES support_reasons (id),
   CONSTRAINT fk_app_reviewer    FOREIGN KEY (reviewed_by)       REFERENCES users (id),
+  CONSTRAINT fk_app_head_reviewer FOREIGN KEY (head_reviewed_by) REFERENCES users (id),
+  CONSTRAINT fk_app_zone        FOREIGN KEY (zone_id)           REFERENCES zones (id),
+  CONSTRAINT fk_app_distributor FOREIGN KEY (distributed_by)    REFERENCES users (id),
+  CONSTRAINT fk_app_dist_photo  FOREIGN KEY (distribution_photo_file_id) REFERENCES files (id),
   CONSTRAINT fk_app_submitter   FOREIGN KEY (submitted_by)      REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

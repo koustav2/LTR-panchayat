@@ -241,19 +241,60 @@ ls -lh /opt/sahayak/backups
 
 ## Deploying changes later
 
+Migrations run **before** the new code serves traffic, not after. `db/init/`
+only executes against an empty database, so a running instance never picks up a
+schema change on its own — and new code against an old schema fails on every
+query that touches a column that is not there yet.
+
 ```bash
 cd /opt/sahayak
+
+# 1. Back up first. Any migration below is a schema change on live data.
+./scripts/backup.sh
+
+# 2. Get the new code, but do not start it yet.
 git pull
+
+# 3. Apply every migration. All of them are safe to run more than once, so
+#    re-running the whole folder is the correct thing to do — it is not
+#    tracked anywhere, and skipping one is worse than repeating one.
+PW=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+for m in db/migrations/*.sql; do
+  echo "applying $m"
+  docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat < "$m"
+done
+
+# 4. Now rebuild and restart.
 docker compose up -d --build
 docker compose ps
+docker compose logs -f api        # wait for "[api] listening on :4000"
 ```
 
-Schema changes are **not** applied automatically — `db/init/` only runs on an
-empty database. Apply them by hand:
+There is a few-second window in step 4 where the old container is still running
+against the new schema. That is unavoidable on a single-instance deploy and is
+the right trade: a supervisor retrying a submission once beats the app being
+broken until somebody remembers to migrate.
+
+### Camera capture needs TLS
+
+The handover photo is taken with `getUserMedia`, which browsers only expose in a
+secure context. Over `https://` it works; over plain `http://` it is simply
+absent and the app falls back to a capture-hinted file picker, which is exactly
+the gallery-reachable path the requirement rules out. Certbot is not optional
+here.
+
+### Checking whether a migration has already been applied
 
 ```bash
-docker compose exec -T db mysql -u root -p"$MYSQL_ROOT_PASSWORD" lrt_panchayat < migration.sql
+PW=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat \
+  -e "SHOW COLUMNS FROM applications LIKE 'approved_amount';
+      SHOW COLUMNS FROM applications LIKE 'status';"
 ```
+
+`approved_amount` should exist, and `status` should read
+`enum('pending_head','pending_mla','head_rejected','accepted','rejected')`.
+If either is missing, migration `003_head_sahayak.sql` has not run.
 
 ---
 
@@ -267,6 +308,8 @@ docker compose exec -T db mysql -u root -p"$MYSQL_ROOT_PASSWORD" lrt_panchayat <
 | Certbot fails | DNS not propagated | `dig +short <domain>` must return the server IP |
 | Login says "Too many attempts" | Rate limiter | Wait 15 min, or raise `LOGIN_RATE_MAX` in `.env` |
 | Photos vanish after restart | `data/uploads` not mounted | Check the `web`/`api` volumes in docker-compose.yml |
+| Form list 500s; logs say `Unknown column 'a.head_comment'` or `'a.approved_amount'` | New code deployed against an old schema | Run the migration loop above, then `docker compose restart api`. No data is lost — the failing queries never wrote anything |
+| Submitting fails; logs mention `Data truncated for column 'status'` | Same cause | Same fix |
 
 ## Rollback
 

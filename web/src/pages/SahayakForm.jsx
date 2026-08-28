@@ -13,6 +13,7 @@ const EMPTY = {
   guardianName: '',
   phone: '',
   blockId: '',
+  zoneId: '',
   panchayatId: '',
   pinCode: '',
   supportTypeId: '',
@@ -125,8 +126,13 @@ export default function SahayakForm() {
   }, [form.amount]);
 
   const panchayats = useMemo(() => {
+    if (!master || !form.zoneId) return [];
+    return master.panchayats.filter((p) => String(p.zone_id) === String(form.zoneId));
+  }, [master, form.zoneId]);
+
+  const zones = useMemo(() => {
     if (!master || !form.blockId) return [];
-    return master.panchayats.filter((p) => String(p.block_id) === String(form.blockId));
+    return master.zones.filter((z) => String(z.block_id) === String(form.blockId));
   }, [master, form.blockId]);
 
   const reasons = useMemo(() => {
@@ -134,11 +140,18 @@ export default function SahayakForm() {
     return master.supportReasons.filter((r) => String(r.support_type_id) === String(form.supportTypeId));
   }, [master, form.supportTypeId]);
 
-  // Changing the parent must clear the child, otherwise a stale panchayat from
-  // the other block stays selected and the server rejects the submission.
+  // Changing a parent must clear every descendant, otherwise a stale zone or
+  // panchayat from the other block stays selected and the server rejects the
+  // submission with an error the user cannot make sense of. Block clears both
+  // levels below it, not just the next one.
   const onBlockChange = (value) => {
-    setForm((f) => ({ ...f, blockId: value, panchayatId: '' }));
-    setErrors((e) => ({ ...e, blockId: undefined, panchayatId: undefined }));
+    setForm((f) => ({ ...f, blockId: value, zoneId: '', panchayatId: '' }));
+    setErrors((e) => ({ ...e, blockId: undefined, zoneId: undefined, panchayatId: undefined }));
+  };
+
+  const onZoneChange = (value) => {
+    setForm((f) => ({ ...f, zoneId: value, panchayatId: '' }));
+    setErrors((e) => ({ ...e, zoneId: undefined, panchayatId: undefined }));
   };
 
   const onSupportTypeChange = (value) => {
@@ -173,13 +186,14 @@ export default function SahayakForm() {
             guardianName: b.guardianName,
             phone: b.phone,
             blockId: String(b.blockId),
+            zoneId: String(b.zoneId),
             panchayatId: String(b.panchayatId),
             pinCode: b.pinCode,
           }));
           setErrors((e) => ({
             ...e,
             fullName: undefined, guardianName: undefined, phone: undefined,
-            blockId: undefined, panchayatId: undefined, pinCode: undefined,
+            blockId: undefined, zoneId: undefined, panchayatId: undefined, pinCode: undefined,
           }));
           setIdentityLocked(true);
           setLookup({ state: 'found', data: res });
@@ -206,6 +220,7 @@ export default function SahayakForm() {
     if (form.guardianName.trim().length < 2) e.guardianName = 'Father / Husband name is required.';
     if (!/^[6-9]\d{9}$/.test(digits(form.phone))) e.phone = 'Enter a valid 10-digit mobile number.';
     if (!form.blockId) e.blockId = 'Choose a block.';
+    if (!form.zoneId) e.zoneId = 'Choose a zone.';
     if (!form.panchayatId) e.panchayatId = 'Choose a panchayat.';
     if (digits(form.pinCode).length !== 6) e.pinCode = 'Enter a 6-digit PIN.';
     if (!form.supportTypeId) e.supportTypeId = 'Choose the type of support.';
@@ -252,6 +267,7 @@ export default function SahayakForm() {
         guardianName: form.guardianName.trim(),
         phone: digits(form.phone),
         blockId: Number(form.blockId),
+        zoneId: Number(form.zoneId),
         panchayatId: Number(form.panchayatId),
         pinCode: digits(form.pinCode),
         supportTypeId: Number(form.supportTypeId),
@@ -483,18 +499,37 @@ export default function SahayakForm() {
           </Field>
 
           <Field
+            label="Zone"
+            required
+            error={errors.zoneId}
+            hint={!form.blockId ? 'Choose a block first' : undefined}
+          >
+            <select
+              data-field="zoneId"
+              value={form.zoneId}
+              disabled={identityLocked || !form.blockId}
+              onChange={(e) => onZoneChange(e.target.value)}
+            >
+              <option value="">{form.blockId ? 'Select zone' : 'Select block first'}</option>
+              {zones.map((z) => (
+                <option key={z.id} value={z.id}>{z.name}</option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
             label="Panchayat"
             required
             error={errors.panchayatId}
-            hint={!form.blockId ? 'Choose a block first' : undefined}
+            hint={!form.zoneId ? 'Choose a zone first' : undefined}
           >
             <select
               data-field="panchayatId"
               value={form.panchayatId}
-              disabled={identityLocked || !form.blockId}
+              disabled={identityLocked || !form.zoneId}
               onChange={(e) => set('panchayatId', e.target.value)}
             >
-              <option value="">Select panchayat</option>
+              <option value="">{form.zoneId ? 'Select panchayat' : 'Select zone first'}</option>
               {panchayats.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}

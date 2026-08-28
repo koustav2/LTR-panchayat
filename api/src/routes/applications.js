@@ -8,6 +8,7 @@ const { encryptAadhaar, hashAadhaar, maskAadhaar, decryptAadhaar } = require('..
 const { nextReferenceNo } = require('../lib/reference');
 const { audit } = require('../lib/audit');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { STATUS, OPEN_STATUSES, isStatus, zeroCounts } = require('../lib/status');
 const {
   ApiError,
   cleanAadhaar,
@@ -25,6 +26,9 @@ router.use(requireAuth);
 
 const PAGE_SIZE = 20;
 
+/** Both reviewers see every application and every money total. */
+const REVIEWER_ROLES = ['head_sahayak', 'mla'];
+
 /* -------------------------------------------------------------------------- */
 /* Create                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -38,6 +42,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
     const guardianName = cleanName(b.guardianName, 'Father / Husband Name');
     const phone = cleanPhone(b.phone);
     const blockId = cleanId(b.blockId, 'Block');
+    const zoneId = cleanId(b.zoneId, 'Zone');
     const panchayatId = cleanId(b.panchayatId, 'Panchayat');
     const pinCode = cleanPin(b.pinCode);
     const supportTypeId = cleanId(b.supportTypeId, 'Type of Support');
@@ -63,17 +68,25 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
       ? b.documentFileIds.map((id) => cleanId(id, 'Document')).slice(0, config.maxDocumentsPerApplication)
       : [];
 
-    // Referential sanity: the dependent dropdowns must actually agree. A
-    // crafted request could otherwise pair a Dharmasala panchayat with the
-    // Rasulpur block, or an Education reason with a Health support type.
+    // Referential sanity: the dependent dropdowns must actually agree, at every
+    // level. A crafted request could otherwise pair a Dharmasala zone with the
+    // Rasulpur block, a panchayat with the wrong zone, or an Education reason
+    // with a Health support type. The chain is checked link by link so the error
+    // names the level that is wrong.
     const block = await queryOne('SELECT id, code, name FROM blocks WHERE id = ? AND is_active = 1', [blockId]);
     if (!block) throw new ApiError(400, 'Please choose a valid Block.');
 
-    const panchayat = await queryOne(
-      'SELECT id FROM panchayats WHERE id = ? AND block_id = ? AND is_active = 1',
-      [panchayatId, blockId]
+    const zone = await queryOne(
+      'SELECT id FROM zones WHERE id = ? AND block_id = ? AND is_active = 1',
+      [zoneId, blockId]
     );
-    if (!panchayat) throw new ApiError(400, 'That Panchayat does not belong to the selected Block.');
+    if (!zone) throw new ApiError(400, 'That Zone does not belong to the selected Block.');
+
+    const panchayat = await queryOne(
+      'SELECT id FROM panchayats WHERE id = ? AND zone_id = ? AND is_active = 1',
+      [panchayatId, zoneId]
+    );
+    if (!panchayat) throw new ApiError(400, 'That Panchayat does not belong to the selected Zone.');
 
     const reason = await queryOne(
       'SELECT id FROM support_reasons WHERE id = ? AND support_type_id = ? AND is_active = 1',
@@ -82,35 +95,12 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
     if (!reason) throw new ApiError(400, 'That Reason of Support does not belong to the selected Type of Support.');
 
     const aadhaarHash = hashAadhaar(aadhaar);
-
-    // Duplicate guard — configurable via DUPLICATE_PENDING_POLICY.
-    if (config.duplicatePendingPolicy !== 'off') {
-      const dupe = await queryOne(
-        `SELECT a.reference_no
-           FROM applications a
-           JOIN beneficiaries bn ON bn.id = a.beneficiary_id
-          WHERE bn.aadhaar_hash = ?
-            AND a.support_type_id = ?
-            AND a.status = 'pending'
-          LIMIT 1`,
-        [aadhaarHash, supportTypeId]
-      );
-      if (dupe && config.duplicatePendingPolicy === 'block') {
-        throw new ApiError(
-          409,
-          `This Aadhaar already has a pending application of the same support type (${dupe.reference_no}).`
-        );
-      }
-      if (dupe && !b.acknowledgeDuplicate) {
-        return res.status(409).json({
-          error: `This Aadhaar already has a pending application of the same support type (${dupe.reference_no}). Submit again to confirm.`,
-          duplicateOf: dupe.reference_no,
-          needsAcknowledgement: true,
-        });
-      }
-    }
-
     const year = new Date().getFullYear();
+
+    // "Already open" now means either verification stage. An application
+    // sitting with the Head Sahayak is just as much a live request as one
+    // sitting with the MLA.
+    const openList = OPEN_STATUSES.map(() => '?').join(', ');
 
     const created = await transaction(async (conn) => {
       // Find or create the beneficiary. One Aadhaar, one row, forever.
@@ -118,6 +108,37 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
         'SELECT id FROM beneficiaries WHERE aadhaar_hash = ? FOR UPDATE',
         [aadhaarHash]
       );
+
+      // The duplicate guard runs *inside* the transaction, after the row lock
+      // above. Outside it, two supervisors submitting for the same person at
+      // the same instant could both read "no duplicate" and both commit.
+      if (config.duplicatePendingPolicy !== 'off' && existingRows.length) {
+        const [dupes] = await conn.execute(
+          `SELECT reference_no
+             FROM applications
+            WHERE beneficiary_id = ?
+              AND support_type_id = ?
+              AND status IN (${openList})
+            LIMIT 1`,
+          [existingRows[0].id, supportTypeId, ...OPEN_STATUSES]
+        );
+        const dupe = dupes[0];
+        if (dupe && config.duplicatePendingPolicy === 'block') {
+          throw new ApiError(
+            409,
+            `This Aadhaar already has an open application of the same support type (${dupe.reference_no}).`
+          );
+        }
+        if (dupe && !b.acknowledgeDuplicate) {
+          const err = new ApiError(
+            409,
+            `This Aadhaar already has an open application of the same support type (${dupe.reference_no}). Submit again to confirm.`,
+            undefined
+          );
+          err.duplicateOf = dupe.reference_no;
+          throw err;
+        }
+      }
 
       let beneficiaryId;
       let isNewBeneficiary = false;
@@ -129,18 +150,18 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
         await conn.execute(
           `UPDATE beneficiaries
               SET full_name = ?, guardian_name = ?, phone = ?, block_id = ?,
-                  panchayat_id = ?, pin_code = ?,
+                  zone_id = ?, panchayat_id = ?, pin_code = ?,
                   photo_file_id = COALESCE(?, photo_file_id)
             WHERE id = ?`,
-          [fullName, guardianName, phone, blockId, panchayatId, pinCode, photoFileId, beneficiaryId]
+          [fullName, guardianName, phone, blockId, zoneId, panchayatId, pinCode, photoFileId, beneficiaryId]
         );
       } else {
         isNewBeneficiary = true;
         const [ins] = await conn.execute(
           `INSERT INTO beneficiaries
              (aadhaar_hash, aadhaar_enc, aadhaar_last4, full_name, guardian_name,
-              phone, block_id, panchayat_id, pin_code, photo_file_id, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              phone, block_id, zone_id, panchayat_id, pin_code, photo_file_id, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             aadhaarHash,
             encryptAadhaar(aadhaar),
@@ -149,6 +170,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
             guardianName,
             phone,
             blockId,
+            zoneId,
             panchayatId,
             pinCode,
             photoFileId,
@@ -160,15 +182,17 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
 
       const referenceNo = await nextReferenceNo(conn, block.code, year);
 
+      // Every new application starts with the Head Sahayak. There is no path
+      // that puts one straight in front of the MLA.
       const [appIns] = await conn.execute(
         `INSERT INTO applications
            (reference_no, beneficiary_id,
             applicant_name, guardian_name, phone,
-            block_id, panchayat_id, pin_code,
+            block_id, zone_id, panchayat_id, pin_code,
             support_type_id, support_reason_id, amount,
             pp_recommend, pp_comment, ms_recommend, ms_comment, mp_recommend, mp_comment,
-            submitted_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            status, submitted_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           referenceNo,
           beneficiaryId,
@@ -176,6 +200,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
           guardianName,
           phone,
           blockId,
+          zoneId,
           panchayatId,
           pinCode,
           supportTypeId,
@@ -187,6 +212,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
           msComment,
           mpRecommend,
           mpComment,
+          STATUS.PENDING_HEAD,
           req.user.id,
         ]
       );
@@ -216,10 +242,20 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
       application: {
         id: created.applicationId,
         referenceNo: created.referenceNo,
-        status: 'pending',
+        status: STATUS.PENDING_HEAD,
       },
     });
   } catch (err) {
+    // The duplicate warning is a 409 the client answers by resubmitting with
+    // acknowledgeDuplicate. It is thrown from inside the transaction so the
+    // rollback happens, and reshaped into its response here.
+    if (err instanceof ApiError && err.duplicateOf) {
+      return res.status(409).json({
+        error: err.message,
+        duplicateOf: err.duplicateOf,
+        needsAcknowledgement: true,
+      });
+    }
     return next(err);
   }
 });
@@ -233,7 +269,7 @@ function buildListFilters(req) {
   const params = [];
 
   // Role scoping happens here, on the server. A supervisor cannot widen it by
-  // editing the request.
+  // editing the request. Both reviewer roles see everything.
   if (req.user.role === 'supervisor') {
     where.push('a.submitted_by = ?');
     params.push(req.user.id);
@@ -246,16 +282,33 @@ function buildListFilters(req) {
   }
 
   const status = String(req.query.status || '').toLowerCase();
-  if (['pending', 'accepted', 'rejected'].includes(status)) {
+  if (isStatus(status)) {
     where.push('a.status = ?');
     params.push(status);
+  } else if (status === 'open') {
+    // Convenience filter for "anything still moving", used by the dashboards.
+    where.push(`a.status IN (${OPEN_STATUSES.map(() => '?').join(', ')})`);
+    params.push(...OPEN_STATUSES);
   }
 
-  const blockId = Number(req.query.blockId);
-  if (Number.isInteger(blockId) && blockId > 0) {
-    where.push('a.block_id = ?');
-    params.push(blockId);
-  }
+  // Block / Zone / Panchayat, each optional and independent — the client
+  // narrows them in that order, but filtering by panchayat alone is valid too.
+  [
+    ['blockId', 'a.block_id'],
+    ['zoneId', 'a.zone_id'],
+    ['panchayatId', 'a.panchayat_id'],
+  ].forEach(([key, column]) => {
+    const v = Number(req.query[key]);
+    if (Number.isInteger(v) && v > 0) {
+      where.push(`${column} = ?`);
+      params.push(v);
+    }
+  });
+
+  // Handover state, only meaningful on accepted applications.
+  const distributed = String(req.query.distributed || '').toLowerCase();
+  if (distributed === 'yes') where.push('a.distributed_at IS NOT NULL');
+  if (distributed === 'no') where.push('a.distributed_at IS NULL');
 
   const q = String(req.query.q || '').trim();
   if (q) {
@@ -299,24 +352,33 @@ router.get('/', async (req, res, next) => {
     // LIMIT / OFFSET are interpolated from validated integers rather than
     // bound, because prepared statements reject placeholders there.
     const rows = await query(
-      `SELECT a.id, a.reference_no, a.status, a.rejection_reason, a.submitted_at, a.reviewed_at,
-              a.applicant_name, a.guardian_name, a.phone, a.amount, bn.aadhaar_last4,
-              bl.name AS block_name, p.name AS panchayat_name,
+      `SELECT a.id, a.reference_no, a.status, a.rejection_reason, a.mla_comment,
+              a.head_comment, a.submitted_at, a.reviewed_at, a.head_reviewed_at,
+              a.applicant_name, a.guardian_name, a.phone,
+              a.amount, a.approved_amount, bn.aadhaar_last4,
+              a.distributed_at,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
-              u.full_name AS submitted_by_name
+              u.full_name AS submitted_by_name,
+              hv.full_name AS head_reviewed_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          ${where}
          ORDER BY a.submitted_at DESC, a.id DESC
          LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
       params
     );
 
+    // Counts are deliberately *unfiltered* (beyond role scoping): they drive
+    // the filter chips, which need to say how many are in each bucket overall,
+    // not how many survive the filter already applied.
     const statusCounts = await query(
       `SELECT a.status, COUNT(*) AS n
          FROM applications a
@@ -325,7 +387,7 @@ router.get('/', async (req, res, next) => {
       req.user.role === 'supervisor' ? [req.user.id] : []
     );
 
-    const counts = { pending: 0, accepted: 0, rejected: 0 };
+    const counts = zeroCounts();
     statusCounts.forEach((r) => {
       counts[r.status] = Number(r.n);
     });
@@ -340,17 +402,26 @@ router.get('/', async (req, res, next) => {
         referenceNo: r.reference_no,
         status: r.status,
         rejectionReason: r.rejection_reason,
+        mlaComment: r.mla_comment,
+        headComment: r.head_comment,
         submittedAt: r.submitted_at,
         reviewedAt: r.reviewed_at,
+        headReviewedAt: r.head_reviewed_at,
+        headReviewedByName: r.head_reviewed_by_name,
         fullName: r.applicant_name,
         guardianName: r.guardian_name,
         phone: r.phone,
         aadhaarMasked: maskAadhaar(r.aadhaar_last4),
         blockName: r.block_name,
+        zoneName: r.zone_name,
         panchayatName: r.panchayat_name,
         supportType: r.support_type,
         supportReason: r.support_reason,
+        distributedAt: r.distributed_at,
         amount: Number(r.amount),
+        // null until the MLA decides — the client shows a dash, never a zero,
+        // because "sanctioned nothing yet" and "sanctioned ₹0" are different.
+        approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
         submittedByName: r.submitted_by_name,
       })),
     });
@@ -360,74 +431,144 @@ router.get('/', async (req, res, next) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Amount rollup by block and panchayat (MLA)                                  */
+/* Amount rollup by block and panchayat (Head Sahayak + MLA)                    */
 /* -------------------------------------------------------------------------- */
 
 /**
  * GET /api/applications/summary
  *
- * Money totals grouped by block, then panchayat.
+ * Money totals grouped by block, then zone, then panchayat. Two different
+ * quantities are tracked and they must never be conflated:
  *
- *   requested = accepted + pending
+ *   requested  — `amount`, what the supervisor filed for
+ *   sanctioned — `approved_amount`, what the MLA actually granted
  *
- * A rejected application is deliberately NOT part of "requested" — once the
- * MLA has turned it down it is no longer money being asked for. It is reported
- * on its own line so nothing disappears silently.
+ * The MLA may sanction more or less than was requested, so the difference
+ * between the two is real information and is reported as `variance`.
+ *
+ *   requested = awaitingHead + awaitingMla + requestedOnAccepted
+ *
+ * Rejected applications — by the Head Sahayak or by the MLA — are excluded from
+ * `requested`: once turned down, that is no longer money being asked for. Each
+ * gets its own line so the figure stays visible rather than vanishing.
  *
  * SUM() over DECIMAL comes back from MySQL as a string; it is converted once,
  * here, so every consumer gets a number.
  */
-router.get('/summary', requireRole('mla'), async (req, res, next) => {
+router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) => {
   try {
     const rows = await query(
       `SELECT a.block_id, bl.name AS block_name, bl.sort_order AS block_order,
+              a.zone_id, z.name AS zone_name, z.sort_order AS zone_order,
               a.panchayat_id, p.name AS panchayat_name, p.sort_order AS panchayat_order,
-              SUM(CASE WHEN a.status = 'accepted' THEN a.amount ELSE 0 END) AS accepted,
-              SUM(CASE WHEN a.status = 'pending'  THEN a.amount ELSE 0 END) AS pending,
-              SUM(CASE WHEN a.status = 'rejected' THEN a.amount ELSE 0 END) AS rejected,
-              SUM(a.status = 'accepted') AS accepted_count,
-              SUM(a.status = 'pending')  AS pending_count,
-              SUM(a.status = 'rejected') AS rejected_count,
+
+              SUM(CASE WHEN a.status = 'pending_head'  THEN a.amount ELSE 0 END) AS awaiting_head,
+              SUM(CASE WHEN a.status = 'pending_mla'   THEN a.amount ELSE 0 END) AS awaiting_mla,
+              SUM(CASE WHEN a.status = 'head_rejected' THEN a.amount ELSE 0 END) AS head_rejected,
+              SUM(CASE WHEN a.status = 'rejected'      THEN a.amount ELSE 0 END) AS mla_rejected,
+
+              -- Both sides of an accepted application: what was asked for, and
+              -- what was granted. The gap between them is the MLA's adjustment.
+              SUM(CASE WHEN a.status = 'accepted' THEN a.amount ELSE 0 END)                        AS accepted_requested,
+              SUM(CASE WHEN a.status = 'accepted' THEN COALESCE(a.approved_amount, 0) ELSE 0 END)  AS sanctioned,
+
+              SUM(a.status = 'pending_head')  AS awaiting_head_count,
+              SUM(a.status = 'pending_mla')   AS awaiting_mla_count,
+              SUM(a.status = 'head_rejected') AS head_rejected_count,
+              SUM(a.status = 'rejected')      AS mla_rejected_count,
+              SUM(a.status = 'accepted')      AS accepted_count,
+
+              -- Handover, on accepted applications only. Valued at what was
+              -- sanctioned, because that is the money that physically moved.
+              SUM(CASE WHEN a.status = 'accepted' AND a.distributed_at IS NOT NULL
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END)          AS distributed,
+              SUM(a.status = 'accepted' AND a.distributed_at IS NOT NULL)        AS distributed_count,
+
               COUNT(*) AS total_count
          FROM applications a
          JOIN blocks bl    ON bl.id = a.block_id
+         JOIN zones z      ON z.id  = a.zone_id
          JOIN panchayats p ON p.id  = a.panchayat_id
         GROUP BY a.block_id, bl.name, bl.sort_order,
+                 a.zone_id, z.name, z.sort_order,
                  a.panchayat_id, p.name, p.sort_order
-        ORDER BY bl.sort_order, bl.name, p.sort_order, p.name`
+        ORDER BY bl.sort_order, bl.name, z.sort_order, z.name, p.sort_order, p.name`
     );
 
     const blocks = [];
     const byBlock = new Map();
 
     const zero = () => ({
-      accepted: 0, pending: 0, rejected: 0, requested: 0,
-      acceptedCount: 0, pendingCount: 0, rejectedCount: 0, totalCount: 0,
+      awaitingHead: 0, awaitingMla: 0,
+      acceptedRequested: 0, sanctioned: 0,
+      headRejected: 0, mlaRejected: 0,
+      requested: 0, variance: 0,
+      distributed: 0, undistributed: 0,
+      awaitingHeadCount: 0, awaitingMlaCount: 0,
+      acceptedCount: 0, headRejectedCount: 0, mlaRejectedCount: 0,
+      distributedCount: 0, undistributedCount: 0,
+      openCount: 0, totalCount: 0,
     });
 
-    const add = (target, r) => {
-      const accepted = Number(r.accepted);
-      const pending = Number(r.pending);
-      const rejected = Number(r.rejected);
-      target.accepted += accepted;
-      target.pending += pending;
-      target.rejected += rejected;
-      target.requested += accepted + pending;
-      target.acceptedCount += Number(r.accepted_count);
-      target.pendingCount += Number(r.pending_count);
-      target.rejectedCount += Number(r.rejected_count);
-      target.totalCount += Number(r.total_count);
+    const add = (t, r) => {
+      const awaitingHead = Number(r.awaiting_head);
+      const awaitingMla = Number(r.awaiting_mla);
+      const acceptedRequested = Number(r.accepted_requested);
+      const sanctioned = Number(r.sanctioned);
+
+      t.awaitingHead += awaitingHead;
+      t.awaitingMla += awaitingMla;
+      t.acceptedRequested += acceptedRequested;
+      t.sanctioned += sanctioned;
+      t.headRejected += Number(r.head_rejected);
+      t.mlaRejected += Number(r.mla_rejected);
+
+      // Everything not turned down, valued at what was asked for.
+      t.requested += awaitingHead + awaitingMla + acceptedRequested;
+      // Positive = the MLA granted more than was asked; negative = deducted.
+      t.variance += sanctioned - acceptedRequested;
+
+      const distributed = Number(r.distributed);
+      const distributedCount = Number(r.distributed_count);
+      const acceptedCount = Number(r.accepted_count);
+
+      t.distributed += distributed;
+      t.distributedCount += distributedCount;
+      // What has been sanctioned but not yet handed over. Derived rather than
+      // summed separately, so the two can never disagree.
+      t.undistributed += sanctioned - distributed;
+      t.undistributedCount += acceptedCount - distributedCount;
+
+      t.awaitingHeadCount += Number(r.awaiting_head_count);
+      t.awaitingMlaCount += Number(r.awaiting_mla_count);
+      t.acceptedCount += acceptedCount;
+      t.headRejectedCount += Number(r.head_rejected_count);
+      t.mlaRejectedCount += Number(r.mla_rejected_count);
+      t.openCount += Number(r.awaiting_head_count) + Number(r.awaiting_mla_count);
+      t.totalCount += Number(r.total_count);
     };
 
     const overall = zero();
 
+    // One row per (block, zone, panchayat). Rolled up into a three-level tree,
+    // with each level accumulating the same figures so any level can be read on
+    // its own without the reader summing children by hand.
+    const byZone = new Map();
+
     rows.forEach((r) => {
       if (!byBlock.has(r.block_id)) {
-        const b = { blockId: r.block_id, blockName: r.block_name, panchayats: [], ...zero() };
+        const b = { blockId: r.block_id, blockName: r.block_name, zones: [], ...zero() };
         byBlock.set(r.block_id, b);
         blocks.push(b);
       }
       const block = byBlock.get(r.block_id);
+
+      if (!byZone.has(r.zone_id)) {
+        const z = { zoneId: r.zone_id, zoneName: r.zone_name, panchayats: [], ...zero() };
+        byZone.set(r.zone_id, z);
+        block.zones.push(z);
+      }
+      const zone = byZone.get(r.zone_id);
 
       const panchayat = {
         panchayatId: r.panchayat_id,
@@ -435,8 +576,9 @@ router.get('/summary', requireRole('mla'), async (req, res, next) => {
         ...zero(),
       };
       add(panchayat, r);
-      block.panchayats.push(panchayat);
+      zone.panchayats.push(panchayat);
 
+      add(zone, r);
       add(block, r);
       add(overall, r);
     });
@@ -448,27 +590,44 @@ router.get('/summary', requireRole('mla'), async (req, res, next) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* CSV export (MLA)                                                            */
+/* CSV export (Head Sahayak + MLA)                                             */
 /* -------------------------------------------------------------------------- */
 
-router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
+const STATUS_LABEL = {
+  [STATUS.PENDING_HEAD]:  'Verification pending — Head Sahayak',
+  [STATUS.PENDING_MLA]:   'Awaiting MLA decision',
+  [STATUS.HEAD_REJECTED]: 'Rejected by Head Sahayak',
+  [STATUS.ACCEPTED]:      'Accepted',
+  [STATUS.REJECTED]:      'Rejected by MLA',
+};
+
+router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next) => {
   try {
     const { where, params } = buildListFilters(req);
     const rows = await query(
-      `SELECT a.reference_no, a.status, a.rejection_reason, a.mla_comment, a.submitted_at, a.reviewed_at,
+      `SELECT a.reference_no, a.status, a.rejection_reason, a.mla_comment,
+              a.head_comment, a.submitted_at, a.head_reviewed_at, a.reviewed_at,
               a.applicant_name, a.guardian_name, a.phone, bn.aadhaar_last4, a.pin_code,
-              bl.name AS block_name, p.name AS panchayat_name,
-              st.name AS support_type, sr.name AS support_reason, a.amount,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
+              st.name AS support_type, sr.name AS support_reason,
+              a.amount, a.approved_amount,
+              a.distributed_at, dv.full_name AS distributed_by_name,
               a.pp_recommend, a.pp_comment, a.ms_recommend, a.ms_comment,
               a.mp_recommend, a.mp_comment,
-              u.full_name AS submitted_by_name
+              u.full_name AS submitted_by_name,
+              hv.full_name AS head_reviewed_by_name,
+              rv.full_name AS reviewed_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
+         LEFT JOIN users rv      ON rv.id = a.reviewed_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
          ${where}
          ORDER BY a.submitted_at DESC
          LIMIT 10000`,
@@ -476,9 +635,13 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
     );
 
     const headers = [
-      'Reference No', 'Status', 'Rejection Reason', 'MLA Comment', 'Submitted At', 'Reviewed At',
-      'Name', 'Father/Husband Name', 'Phone', 'Aadhaar (last 4)', 'PIN',
-      'Block', 'Panchayat', 'Type of Support', 'Reason of Support', 'Amount',
+      'Reference No', 'Stage', 'Submitted At', 'Name', 'Father/Husband Name',
+      'Phone', 'Aadhaar (last 4)', 'PIN', 'Block', 'Zone', 'Panchayat',
+      'Type of Support', 'Reason of Support',
+      'Amount Requested', 'Amount Sanctioned', 'Difference',
+      'Head Sahayak', 'Head Verified At', 'Head Comment',
+      'MLA', 'MLA Decided At', 'Rejection Reason', 'MLA Comment',
+      'Distributed', 'Distributed At', 'Distributed By',
       'Panchayat Prabhari', 'PP Comment', 'Mandal Sabhapati', 'MS Comment',
       'Mandal Prabhari', 'MP Comment', 'Submitted By',
     ];
@@ -493,10 +656,20 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
 
     const lines = [headers.map(esc).join(',')];
     rows.forEach((r) => {
+      const sanctioned = r.approved_amount == null ? null : Number(r.approved_amount);
+      // Only meaningful once a sanction exists; blank otherwise rather than a
+      // misleading zero.
+      const diff = sanctioned == null ? '' : (sanctioned - Number(r.amount)).toFixed(2);
+
       lines.push([
-        r.reference_no, r.status, r.rejection_reason, r.mla_comment, r.submitted_at, r.reviewed_at,
+        r.reference_no, STATUS_LABEL[r.status] || r.status, r.submitted_at,
         r.applicant_name, r.guardian_name, r.phone, r.aadhaar_last4, r.pin_code,
-        r.block_name, r.panchayat_name, r.support_type, r.support_reason, r.amount,
+        r.block_name, r.zone_name, r.panchayat_name, r.support_type, r.support_reason,
+        r.amount, sanctioned == null ? '' : sanctioned.toFixed(2), diff,
+        r.head_reviewed_by_name, r.head_reviewed_at, r.head_comment,
+        r.reviewed_by_name, r.reviewed_at, r.rejection_reason, r.mla_comment,
+        r.status === STATUS.ACCEPTED ? (r.distributed_at ? 'Yes' : 'No') : '',
+        r.distributed_at, r.distributed_by_name,
         r.pp_recommend, r.pp_comment, r.ms_recommend, r.ms_comment,
         r.mp_recommend, r.mp_comment, r.submitted_by_name,
       ].map(esc).join(','));
@@ -507,6 +680,227 @@ router.get('/export.csv', requireRole('mla'), async (req, res, next) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="sahayak-applications.csv"');
     res.send(`﻿${lines.join('\r\n')}`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Approval list — every accepted application, for everyone                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/applications/approved
+ *   ?blockId= &zoneId= &panchayatId= &distributed=yes|no &q= &page=
+ *
+ * Deliberately NOT scoped by submitter. Once the MLA has approved an
+ * application the money has to physically reach the applicant, and whichever
+ * Sahayak is in that panchayat that week is the one who can do it — not
+ * necessarily the one who filed the form. So all three roles see the whole
+ * list, filtered by Block / Zone / Panchayat.
+ *
+ * This is the one place a supervisor sees another supervisor's work. It is a
+ * deliberate widening, and it is why `GET /:id` and `GET /files/:id` both carry
+ * a matching exception for accepted applications: a list you can see whose
+ * detail you cannot open would just be broken.
+ *
+ * Undistributed first, because that is the work; within each group, oldest
+ * first, because that is the one that has been waiting longest.
+ */
+router.get('/approved', async (req, res, next) => {
+  try {
+    const where = ["a.status = 'accepted'"];
+    const params = [];
+
+    [
+      ['blockId', 'a.block_id'],
+      ['zoneId', 'a.zone_id'],
+      ['panchayatId', 'a.panchayat_id'],
+    ].forEach(([key, column]) => {
+      const v = Number(req.query[key]);
+      if (Number.isInteger(v) && v > 0) {
+        where.push(`${column} = ?`);
+        params.push(v);
+      }
+    });
+
+    const distributed = String(req.query.distributed || '').toLowerCase();
+    if (distributed === 'yes') where.push('a.distributed_at IS NOT NULL');
+    if (distributed === 'no') where.push('a.distributed_at IS NULL');
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const digits = q.replace(/\D/g, '');
+      const clauses = ['a.reference_no LIKE ?', 'a.applicant_name LIKE ?', 'a.guardian_name LIKE ?'];
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      if (digits.length >= 4) {
+        clauses.push('a.phone LIKE ?');
+        params.push(`%${digits}%`);
+        if (digits.length === 4) {
+          clauses.push('bn.aadhaar_last4 = ?');
+          params.push(digits);
+        }
+      }
+      where.push(`(${clauses.join(' OR ')})`);
+    }
+
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const offset = (page - 1) * PAGE_SIZE;
+
+    const countRow = await queryOne(
+      `SELECT COUNT(*) AS total,
+              SUM(a.distributed_at IS NULL)     AS pending_handover,
+              SUM(a.distributed_at IS NOT NULL) AS done_handover,
+              SUM(COALESCE(a.approved_amount, 0)) AS sanctioned_total,
+              SUM(CASE WHEN a.distributed_at IS NOT NULL
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END) AS distributed_total
+         FROM applications a
+         JOIN beneficiaries bn ON bn.id = a.beneficiary_id
+         ${whereSql}`,
+      params
+    );
+
+    const rows = await query(
+      `SELECT a.id, a.reference_no, a.applicant_name, a.guardian_name, a.phone,
+              a.amount, a.approved_amount, a.reviewed_at,
+              a.distributed_at, a.distribution_photo_file_id,
+              bn.aadhaar_last4,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
+              st.name AS support_type, sr.name AS support_reason,
+              u.full_name AS submitted_by_name,
+              dv.full_name AS distributed_by_name
+         FROM applications a
+         JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
+         JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
+         JOIN panchayats p       ON p.id  = a.panchayat_id
+         JOIN support_types st   ON st.id = a.support_type_id
+         JOIN support_reasons sr ON sr.id = a.support_reason_id
+         JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
+         ${whereSql}
+         ORDER BY (a.distributed_at IS NOT NULL), a.reviewed_at ASC, a.id ASC
+         LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+      params
+    );
+
+    res.json({
+      page,
+      pageSize: PAGE_SIZE,
+      total: Number(countRow.total),
+      counts: {
+        pendingHandover: Number(countRow.pending_handover || 0),
+        distributed: Number(countRow.done_handover || 0),
+      },
+      totals: {
+        sanctioned: Number(countRow.sanctioned_total || 0),
+        distributed: Number(countRow.distributed_total || 0),
+      },
+      applications: rows.map((r) => ({
+        id: r.id,
+        referenceNo: r.reference_no,
+        fullName: r.applicant_name,
+        guardianName: r.guardian_name,
+        phone: r.phone,
+        aadhaarMasked: maskAadhaar(r.aadhaar_last4),
+        blockName: r.block_name,
+        zoneName: r.zone_name,
+        panchayatName: r.panchayat_name,
+        supportType: r.support_type,
+        supportReason: r.support_reason,
+        amount: Number(r.amount),
+        approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
+        reviewedAt: r.reviewed_at,
+        submittedByName: r.submitted_by_name,
+        distributedAt: r.distributed_at,
+        distributedByName: r.distributed_by_name,
+        distributionPhotoFileId: r.distribution_photo_file_id,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Distribution — recording that the money reached the applicant                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * PATCH /api/applications/:id/distribute   { photoFileId }
+ *
+ * Either field role can record a handover: whoever is standing in front of the
+ * applicant. The MLA cannot — they decide, they do not distribute.
+ *
+ * The photo is required and is the whole point of the endpoint. It must be a
+ * file of kind `distribution_photo`, which the client obtains by capturing from
+ * the camera rather than choosing from the gallery. That is a strong deterrent,
+ * not proof: no browser API can prove an image came from a live camera, so this
+ * makes casual reuse of an old photo awkward rather than impossible.
+ *
+ * Recording a handover is one-way, like every other transition here.
+ */
+router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
+
+    const photoFileId = cleanId(req.body.photoFileId, 'Distribution photo');
+
+    const existing = await queryOne(
+      'SELECT id, status, reference_no, distributed_at FROM applications WHERE id = ?',
+      [id]
+    );
+    if (!existing) throw new ApiError(404, 'Application not found.');
+    if (existing.status !== STATUS.ACCEPTED) {
+      throw new ApiError(409, 'Only an application the MLA has accepted can be marked as distributed.');
+    }
+    if (existing.distributed_at) {
+      throw new ApiError(409, 'This application is already marked as distributed.');
+    }
+
+    // The photo must exist, be a distribution photo, and not already be doing
+    // this job for a different application.
+    const photo = await queryOne(
+      'SELECT id, kind FROM files WHERE id = ?',
+      [photoFileId]
+    );
+    if (!photo) throw new ApiError(400, 'That photo was not found. Please take it again.');
+    if (photo.kind !== 'distribution_photo') {
+      throw new ApiError(400, 'That file is not a distribution photo.');
+    }
+    const reused = await queryOne(
+      'SELECT id FROM applications WHERE distribution_photo_file_id = ? LIMIT 1',
+      [photoFileId]
+    );
+    if (reused) throw new ApiError(400, 'That photo has already been used for another application.');
+
+    const result = await query(
+      `UPDATE applications
+          SET distributed_at = NOW(), distributed_by = ?, distribution_photo_file_id = ?
+        WHERE id = ? AND status = ? AND distributed_at IS NULL`,
+      [req.user.id, photoFileId, id, STATUS.ACCEPTED]
+    );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was marked as distributed by someone else a moment ago.');
+    }
+
+    // Attach the photo to the application too, so it shows up alongside the
+    // other files and is covered by the same access checks.
+    await query(
+      'INSERT IGNORE INTO application_files (application_id, file_id) VALUES (?, ?)',
+      [id, photoFileId]
+    );
+
+    await audit(req, {
+      entity: 'application',
+      entityId: id,
+      action: 'distributed',
+      detail: { referenceNo: existing.reference_no, photoFileId },
+    });
+
+    res.json({ ok: true, distributed: true });
   } catch (err) {
     next(err);
   }
@@ -525,24 +919,36 @@ router.get('/:id', async (req, res, next) => {
       // a.* already carries the submitted-time applicant_name/guardian_name/phone,
       // so only Aadhaar and the photo are taken from the beneficiary row.
       `SELECT a.*, bn.aadhaar_last4, bn.aadhaar_enc, bn.photo_file_id,
-              bl.name AS block_name, p.name AS panchayat_name,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name,
-              rv.full_name AS reviewed_by_name
+              hv.full_name AS head_reviewed_by_name,
+              rv.full_name AS reviewed_by_name,
+              dv.full_name AS distributed_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          LEFT JOIN users rv      ON rv.id = a.reviewed_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
         WHERE a.id = ?`,
       [id]
     );
 
     if (!row) throw new ApiError(404, 'Application not found.');
-    if (req.user.role === 'supervisor' && row.submitted_by !== req.user.id) {
+    // A supervisor sees their own submissions, plus every accepted application —
+    // the approval list shows them all of those, and they may be the one
+    // recording the handover.
+    if (
+      req.user.role === 'supervisor' &&
+      row.submitted_by !== req.user.id &&
+      row.status !== STATUS.ACCEPTED
+    ) {
       throw new ApiError(403, 'You can only view your own submissions.');
     }
 
@@ -567,23 +973,37 @@ router.get('/:id', async (req, res, next) => {
         id: row.id,
         referenceNo: row.reference_no,
         status: row.status,
+
+        headComment: row.head_comment,
+        headReviewedAt: row.head_reviewed_at,
+        headReviewedByName: row.head_reviewed_by_name,
+
         rejectionReason: row.rejection_reason,
         mlaComment: row.mla_comment,
-        submittedAt: row.submitted_at,
-        submittedByName: row.submitted_by_name,
         reviewedAt: row.reviewed_at,
         reviewedByName: row.reviewed_by_name,
+
+        submittedAt: row.submitted_at,
+        submittedByName: row.submitted_by_name,
+
         fullName: row.applicant_name,
         guardianName: row.guardian_name,
         phone: row.phone,
         aadhaarMasked: maskAadhaar(row.aadhaar_last4),
         aadhaarFull,
         blockName: row.block_name,
+        zoneName: row.zone_name,
         panchayatName: row.panchayat_name,
         pinCode: row.pin_code,
         supportType: row.support_type,
         supportReason: row.support_reason,
         amount: Number(row.amount),
+        approvedAmount: row.approved_amount == null ? null : Number(row.approved_amount),
+
+        distributedAt: row.distributed_at,
+        distributedByName: row.distributed_by_name,
+        distributionPhotoFileId: row.distribution_photo_file_id,
+
         ppRecommend: row.pp_recommend,
         ppComment: row.pp_comment,
         msRecommend: row.ms_recommend,
@@ -609,21 +1029,111 @@ router.get('/:id', async (req, res, next) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Review — MLA only                                                           */
+/* Stage 2 — Head Sahayak verification                                         */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * PATCH /api/applications/:id/verify   { decision: 'forward' | 'reject', comment }
+ *
+ * The Head Sahayak either forwards the application to the MLA or rejects it.
+ * A comment is required either way — the whole point of the stage is that the
+ * MLA (on a forward) or the supervisor (on a rejection) can see the reasoning.
+ *
+ * Only an application still sitting at pending_head can be verified, so a
+ * decision cannot be re-made or applied on top of the MLA's.
+ */
+router.patch('/:id/verify', requireRole('head_sahayak'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
+
+    const decision = String(req.body.decision || '').toLowerCase();
+    if (!['forward', 'reject'].includes(decision)) {
+      throw new ApiError(400, 'Decision must be forward or reject.');
+    }
+
+    const comment = String(req.body.comment || '').trim();
+    if (comment.length < 3) {
+      throw new ApiError(
+        400,
+        decision === 'forward'
+          ? 'A comment is required when sending an application to the MLA.'
+          : 'A reason is required when rejecting an application.'
+      );
+    }
+    if (comment.length > 2000) {
+      throw new ApiError(400, 'Comment is too long (maximum 2000 characters).');
+    }
+
+    const existing = await queryOne(
+      'SELECT id, status, reference_no FROM applications WHERE id = ?',
+      [id]
+    );
+    if (!existing) throw new ApiError(404, 'Application not found.');
+    if (existing.status !== STATUS.PENDING_HEAD) {
+      throw new ApiError(
+        409,
+        existing.status === STATUS.PENDING_MLA
+          ? 'This application has already been sent to the MLA.'
+          : 'This application has already been decided.'
+      );
+    }
+
+    const next_ = decision === 'forward' ? STATUS.PENDING_MLA : STATUS.HEAD_REJECTED;
+
+    // The status guard is repeated in the UPDATE so a concurrent verify loses
+    // cleanly rather than overwriting the first one's decision.
+    const result = await query(
+      `UPDATE applications
+          SET status = ?, head_comment = ?, head_reviewed_by = ?, head_reviewed_at = NOW()
+        WHERE id = ? AND status = ?`,
+      [next_, comment, req.user.id, id, STATUS.PENDING_HEAD]
+    );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was verified by someone else a moment ago.');
+    }
+
+    await audit(req, {
+      entity: 'application',
+      entityId: id,
+      action: `head_${decision}`,
+      detail: { referenceNo: existing.reference_no, comment },
+    });
+
+    res.json({ ok: true, status: next_ });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Stage 3 — MLA decision                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * PATCH /api/applications/:id/status
+ *   { status: 'accepted' | 'rejected', approvedAmount, rejectionReason, comment }
+ *
+ * Only an application the Head Sahayak has forwarded can be decided. One
+ * already rejected by the head is visible to the MLA but not actionable — that
+ * rejection is final.
+ *
+ * On acceptance the MLA sets the amount actually sanctioned. It defaults to
+ * the requested amount but may be raised or lowered; it must be greater than
+ * zero, because an acceptance worth nothing is a rejection with extra steps.
+ */
 router.patch('/:id/status', requireRole('mla'), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
 
     const status = String(req.body.status || '').toLowerCase();
-    if (!['accepted', 'rejected'].includes(status)) {
+    if (![STATUS.ACCEPTED, STATUS.REJECTED].includes(status)) {
       throw new ApiError(400, 'Status must be accepted or rejected.');
     }
 
     const reason = String(req.body.rejectionReason || '').trim();
-    if (status === 'rejected' && reason.length < 3) {
+    if (status === STATUS.REJECTED && reason.length < 3) {
       throw new ApiError(400, 'A reason is required when rejecting an application.');
     }
 
@@ -634,19 +1144,52 @@ router.patch('/:id/status', requireRole('mla'), async (req, res, next) => {
       throw new ApiError(400, 'Comment is too long (maximum 2000 characters).');
     }
 
-    const existing = await queryOne('SELECT id, status, reference_no FROM applications WHERE id = ?', [id]);
+    const existing = await queryOne(
+      'SELECT id, status, reference_no, amount FROM applications WHERE id = ?',
+      [id]
+    );
     if (!existing) throw new ApiError(404, 'Application not found.');
-    if (existing.status !== 'pending') {
+
+    if (existing.status === STATUS.PENDING_HEAD) {
+      throw new ApiError(409, 'The Head Sahayak has not verified this application yet.');
+    }
+    if (existing.status === STATUS.HEAD_REJECTED) {
+      throw new ApiError(409, 'This application was rejected by the Head Sahayak.');
+    }
+    if (existing.status !== STATUS.PENDING_MLA) {
       throw new ApiError(409, `This application was already ${existing.status}.`);
     }
 
-    await query(
+    // Defaults to what was asked for, so accepting without touching the field
+    // sanctions the full amount.
+    const approvedAmount =
+      status === STATUS.ACCEPTED
+        ? cleanAmount(
+            req.body.approvedAmount === undefined || req.body.approvedAmount === null || req.body.approvedAmount === ''
+              ? existing.amount
+              : req.body.approvedAmount,
+            'Amount sanctioned'
+          )
+        : null;
+
+    const result = await query(
       `UPDATE applications
-          SET status = ?, rejection_reason = ?, mla_comment = ?,
+          SET status = ?, approved_amount = ?, rejection_reason = ?, mla_comment = ?,
               reviewed_by = ?, reviewed_at = NOW()
-        WHERE id = ? AND status = 'pending'`,
-      [status, status === 'rejected' ? reason : null, comment || null, req.user.id, id]
+        WHERE id = ? AND status = ?`,
+      [
+        status,
+        approvedAmount,
+        status === STATUS.REJECTED ? reason : null,
+        comment || null,
+        req.user.id,
+        id,
+        STATUS.PENDING_MLA,
+      ]
     );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was decided by someone else a moment ago.');
+    }
 
     await audit(req, {
       entity: 'application',
@@ -654,12 +1197,14 @@ router.patch('/:id/status', requireRole('mla'), async (req, res, next) => {
       action: `review_${status}`,
       detail: {
         referenceNo: existing.reference_no,
-        reason: status === 'rejected' ? reason : null,
+        requestedAmount: String(existing.amount),
+        approvedAmount,
+        reason: status === STATUS.REJECTED ? reason : null,
         comment: comment || null,
       },
     });
 
-    res.json({ ok: true, status });
+    res.json({ ok: true, status, approvedAmount: approvedAmount == null ? null : Number(approvedAmount) });
   } catch (err) {
     next(err);
   }
