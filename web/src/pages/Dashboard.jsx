@@ -2,8 +2,24 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, formatDate } from '../components/ui';
+import { MY_QUEUE, DeskHead, formatDate } from '../components/ui';
 import AmountSummary from '../components/AmountSummary';
+
+/**
+ * The five stages, in pipeline order, as counter tiles.
+ *
+ * Every role sees the same five — a supervisor needs to know their form is
+ * sitting with the Head Sahayak just as much as the head needs to know how many
+ * are waiting on them. What changes by role is which tile is highlighted as
+ * "yours" and what the call to action underneath says.
+ */
+const TILES = [
+  { key: 'pending_head',  label: 'With Head',     cls: 'wait' },
+  { key: 'pending_mla',   label: 'With MLA',      cls: 'sent' },
+  { key: 'accepted',      label: 'Accepted',      cls: 'accepted' },
+  { key: 'head_rejected', label: 'Head Rejected', cls: 'rejected' },
+  { key: 'rejected',      label: 'MLA Rejected',  cls: 'rejected' },
+];
 
 export default function Dashboard() {
   const { user, serverDate } = useAuth();
@@ -11,6 +27,10 @@ export default function Dashboard() {
   const [counts, setCounts] = useState(null);
 
   const isSupervisor = user.role === 'supervisor';
+  const isHead = user.role === 'head_sahayak';
+  const isMla = user.role === 'mla';
+  const queue = MY_QUEUE[user.role];
+  const waiting = counts && queue ? counts[queue] : 0;
 
   useEffect(() => {
     let alive = true;
@@ -51,38 +71,43 @@ export default function Dashboard() {
           <span>
             <span className="tile-title">List of Form Uploaded</span>
             <span className="tile-desc">
-              {isSupervisor ? 'Your submissions and their status' : 'All submissions — review and decide'}
+              {isSupervisor
+                ? 'Your submissions and where each one has reached'
+                : isHead
+                ? 'Verify forms and send them on to the MLA'
+                : 'Forms the Head Sahayak has verified — accept or reject'}
             </span>
           </span>
         </button>
       </div>
 
       {counts && (
-        <div className="counts">
-          <div className="count pending">
-            <div className="n">{counts.pending}</div>
-            <div className="l">Pending</div>
-          </div>
-          <div className="count accepted">
-            <div className="n">{counts.accepted}</div>
-            <div className="l">Accepted</div>
-          </div>
-          <div className="count rejected">
-            <div className="n">{counts.rejected}</div>
-            <div className="l">Rejected</div>
-          </div>
+        <div className="counts counts-5">
+          {TILES.map((t) => (
+            <button
+              key={t.key}
+              className={`count ${t.cls} ${t.key === queue ? 'mine' : ''}`}
+              onClick={() => navigate(`/forms?status=${t.key}`)}
+            >
+              <div className="n">{counts[t.key]}</div>
+              <div className="l">{t.label}</div>
+            </button>
+          ))}
         </div>
       )}
 
-      {!isSupervisor && counts && counts.pending > 0 && (
-        <button className="btn btn-primary btn-block" onClick={() => navigate('/forms?status=pending')}>
-          Review {counts.pending} pending {counts.pending === 1 ? 'application' : 'applications'}
+      {/* The one number that is work rather than status. */}
+      {counts && waiting > 0 && (
+        <button className="btn btn-primary btn-block" onClick={() => navigate(`/forms?status=${queue}`)}>
+          {isHead
+            ? `Verify ${waiting} ${waiting === 1 ? 'application' : 'applications'}`
+            : `Review ${waiting} ${waiting === 1 ? 'application' : 'applications'}`}
         </button>
       )}
 
-      {/* Money rolled up by block and panchayat. MLA only — the endpoint is
-          role-gated on the server too, not just hidden here. */}
-      {!isSupervisor && <AmountSummary />}
+      {/* Money rolled up by block and panchayat. Both reviewer roles see it —
+          the endpoint is role-gated on the server too, not just hidden here. */}
+      {(isHead || isMla) && <AmountSummary />}
     </>
   );
 }

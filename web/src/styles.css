@@ -33,6 +33,13 @@
   --blue-200: #bfdbfe;
   --blue-700: #1d4ed8;
 
+  /* The middle stage — verified by the Head Sahayak, now with the MLA. It needs
+     to read as "moving", clearly apart from both the amber of "not looked at
+     yet" and the green of "done". */
+  --indigo-50:  #eef2ff;
+  --indigo-200: #c7d2fe;
+  --indigo-700: #4338ca;
+
   --radius: 12px;
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, .06), 0 1px 3px rgba(15, 23, 42, .1);
   --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, .08), 0 2px 4px -2px rgba(15, 23, 42, .06);
@@ -135,15 +142,25 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 
 /* Counter strip */
 .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
+/* Five stages do not fit across a phone, so they wrap two-then-three rather
+   than shrinking to unreadable. From 700px up they sit on one line. */
+.counts-5 { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 700px) { .counts-5 { grid-template-columns: repeat(5, 1fr); } }
 .count {
   background: #fff; border: 1px solid var(--slate-200); border-radius: var(--radius);
   padding: 12px 10px; text-align: center;
+  font: inherit; color: inherit; cursor: pointer;
 }
-.count .n { font-size: 22px; font-weight: 700; line-height: 1.1; }
+.count:active { background: var(--slate-50); }
+.count .n { font-size: 22px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .count .l { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-500); margin-top: 2px; }
-.count.pending  .n { color: var(--amber-700); }
+.count.wait     .n { color: var(--amber-700); }
+.count.sent     .n { color: var(--indigo-700); }
 .count.accepted .n { color: var(--green-700); }
 .count.rejected .n { color: var(--red-600); }
+/* The stage waiting on the signed-in role. One ring, nothing louder — it marks
+   the queue without turning the strip into a traffic light. */
+.count.mine { border-color: var(--green-600); box-shadow: 0 0 0 2px var(--green-50); }
 
 /* ---------------------------------------------------------------- forms */
 
@@ -281,6 +298,9 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   border: 1px solid var(--slate-300); background: #fff; color: var(--slate-600);
 }
 .chip[aria-pressed=true] { background: var(--green-700); border-color: var(--green-700); color: #fff; }
+/* The queue waiting on this role. Kept subtle: it is already sorted first. */
+.chip-mine { border-color: var(--green-600); color: var(--green-800); }
+.chip-mine[aria-pressed=true] { color: #fff; }
 
 .rows { display: grid; gap: 10px; }
 .row {
@@ -303,9 +323,14 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
   padding: 4px 9px; border-radius: 999px; white-space: nowrap; flex: none;
 }
-.badge.pending  { background: var(--amber-50); color: var(--amber-700); border: 1px solid var(--amber-200); }
-.badge.accepted { background: var(--green-50); color: var(--green-800); border: 1px solid var(--green-100); }
-.badge.rejected { background: var(--red-50);   color: var(--red-700);   border: 1px solid var(--red-200); }
+.badge.pending_head  { background: var(--amber-50);  color: var(--amber-700);  border: 1px solid var(--amber-200); }
+.badge.pending_mla   { background: var(--indigo-50); color: var(--indigo-700); border: 1px solid var(--indigo-200); }
+.badge.head_rejected { background: var(--red-50);    color: var(--red-700);    border: 1px solid var(--red-200); }
+.badge.accepted      { background: var(--green-50);  color: var(--green-800);  border: 1px solid var(--green-100); }
+.badge.rejected      { background: var(--red-50);    color: var(--red-700);    border: 1px solid var(--red-200); }
+/* A head rejection and an MLA rejection are both red, so the dashed border is
+   what separates them at a glance without adding a sixth colour. */
+.badge.head_rejected { border-style: dashed; }
 
 /* ---------------------------------------------------------------- detail */
 
@@ -622,8 +647,37 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   font-size: 15px; font-weight: 700; color: var(--green-800);
   font-variant-numeric: tabular-nums; margin-top: 3px;
 }
+
+/* Requested and sanctioned, side by side on a list card. Two labelled figures
+   beat one unlabelled number the moment the two can differ. */
+.row-money {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px;
+  margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--slate-200);
+}
+.row-money .ml {
+  display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--slate-500);
+}
+.row-money .mv {
+  display: block; font-size: 15px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--slate-900);
+}
+.row-money .mv.granted  { color: var(--green-800); }
+/* Not yet decided. Grey, and a dash rather than a zero — "nothing sanctioned
+   yet" and "sanctioned nothing" are different facts. */
+.row-money .mv.pendingv { color: var(--slate-400); font-weight: 600; }
+.row-delta { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; align-self: center; }
+.row-delta.up   { color: var(--indigo-700); }
+.row-delta.down { color: var(--amber-700); }
+
 table.data td.right, table.data th.right { text-align: right; }
 table.data .c-amount { font-weight: 650; color: var(--green-800); }
+table.data .c-requested  { font-weight: 600; color: var(--slate-700); }
+table.data .c-sanctioned { font-weight: 700; color: var(--green-800); }
+table.data .c-pendingv   { color: var(--slate-300); font-weight: 600; }
+table.data .c-delta { font-size: 11px; font-weight: 700; margin-top: 2px; }
+table.data .c-delta.up   { color: var(--indigo-700); }
+table.data .c-delta.down { color: var(--amber-700); }
 
 .summary-card { margin-top: 18px; overflow: hidden; }
 .summary-head {
@@ -637,33 +691,43 @@ table.data .c-amount { font-weight: 650; color: var(--green-800); }
   display: grid; gap: 10px; padding: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-@media (min-width: 900px) { .summary-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 900px) { .summary-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 .summary-tiles .stat { border: 1px solid var(--slate-200); border-radius: 10px; padding: 12px; }
 .summary-tiles .l { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-500); }
 .summary-tiles .n { font-size: 19px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; line-height: 1.2; }
 .summary-tiles .c { font-size: 11px; color: var(--slate-400); margin-top: 2px; }
-.summary-tiles .requested { background: var(--blue-50);  border-color: var(--blue-200); }
+.summary-tiles .requested  { background: var(--blue-50);   border-color: var(--blue-200); }
 .summary-tiles .requested .n { color: var(--blue-700); }
-.summary-tiles .accepted  { background: var(--green-50); border-color: var(--green-100); }
-.summary-tiles .accepted .n { color: var(--green-800); }
-.summary-tiles .pending   { background: var(--amber-50); border-color: var(--amber-200); }
-.summary-tiles .pending .n { color: var(--amber-700); }
-.summary-tiles .rejected  { background: var(--red-50);   border-color: var(--red-200); }
+.summary-tiles .sanctioned { background: var(--green-50);  border-color: var(--green-100); }
+.summary-tiles .sanctioned .n { color: var(--green-800); }
+.summary-tiles .wait       { background: var(--amber-50);  border-color: var(--amber-200); }
+.summary-tiles .wait .n    { color: var(--amber-700); }
+.summary-tiles .sent       { background: var(--indigo-50); border-color: var(--indigo-200); }
+.summary-tiles .sent .n    { color: var(--indigo-700); }
+.summary-tiles .rejected   { background: var(--red-50);    border-color: var(--red-200); }
 .summary-tiles .rejected .n { color: var(--red-700); }
+
+/* The MLA's net adjustment. Up and down are different facts, not good and bad,
+   so neither gets red. */
+.var { font-weight: 700; font-variant-numeric: tabular-nums; }
+.var.up   { color: var(--indigo-700); }
+.var.down { color: var(--amber-700); }
+.var-none { color: var(--slate-400); }
 
 /* The rollup table scrolls sideways on a phone rather than squashing. */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.summary-table { min-width: 620px; font-size: 13.5px; }
+.summary-table { min-width: 720px; font-size: 13.5px; }
 .summary-table .block-row td { background: var(--slate-50); font-size: 14px; }
 .summary-table .block-row:hover td { background: var(--green-50); }
 .summary-table .caret { display: inline-block; width: 16px; color: var(--slate-400); }
 .summary-table .panchayat-row td { color: var(--slate-600); }
 .summary-table .indent { padding-left: 34px; }
 .summary-table .soft { opacity: .85; }
-.summary-table .requested { color: var(--blue-700); font-weight: 650; }
-.summary-table .accepted  { color: var(--green-800); }
-.summary-table .pending   { color: var(--amber-700); }
-.summary-table .rejected  { color: var(--red-700); }
+.summary-table .requested  { color: var(--blue-700); font-weight: 650; }
+.summary-table .sanctioned { color: var(--green-800); font-weight: 700; }
+.summary-table .wait       { color: var(--amber-700); }
+.summary-table .sent       { color: var(--indigo-700); }
+.summary-table .rejected   { color: var(--red-700); }
 .summary-table .grand-row td {
   background: var(--slate-100); border-top: 2px solid var(--slate-300);
   font-weight: 700; font-size: 14px;
@@ -697,3 +761,102 @@ table.data .c-amount { font-weight: 650; color: var(--green-800); }
 .photo-preview-actions button.danger { color: var(--red-700); border-color: var(--red-200); }
 
 .spinner.dark { border-color: rgba(100,116,139,.35); border-top-color: var(--slate-600); margin-right: 6px; }
+
+/* ------------------------------------------------ three-stage progress ---- */
+
+/* The rail on the detail page. Vertical on a phone (a horizontal one squeezes
+   three labels into 320px and none of them read), horizontal from 640px up. */
+.pipeline { display: grid; gap: 0; }
+.pl-step {
+  display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start;
+  position: relative; padding-bottom: 16px;
+}
+.pl-step:last-child { padding-bottom: 0; }
+/* The connector between dots. Drawn on the step, not between them, so it never
+   overshoots past the last dot. */
+.pl-step:not(:last-child)::before {
+  content: ''; position: absolute; left: 10px; top: 18px; bottom: 2px;
+  width: 2px; background: var(--slate-200);
+}
+.pl-step.done:not(:last-child)::before { background: var(--green-600); }
+.pl-dot {
+  width: 14px; height: 14px; margin: 3px 0 0 4px; border-radius: 50%;
+  border: 2px solid var(--slate-300); background: #fff; display: block;
+}
+.pl-step.done .pl-dot { border-color: var(--green-600); background: var(--green-600); }
+.pl-step.now  .pl-dot { border-color: var(--amber-700); background: var(--amber-50); }
+.pl-step.stop .pl-dot { border-color: var(--red-600);   background: var(--red-600); }
+.pl-step.skip .pl-dot { border-style: dashed; }
+.pl-t { font-size: 14px; font-weight: 650; }
+.pl-s { font-size: 12.5px; color: var(--slate-500); margin-top: 1px; }
+.pl-step.now  .pl-t { color: var(--amber-700); }
+.pl-step.stop .pl-t { color: var(--red-700); }
+.pl-step.skip .pl-t, .pl-step.skip .pl-s, .pl-step.todo .pl-t, .pl-step.todo .pl-s { color: var(--slate-400); }
+
+@media (min-width: 640px) {
+  .pipeline { grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .pl-step { grid-template-columns: 1fr; gap: 6px; padding-bottom: 0; }
+  .pl-step:not(:last-child)::before {
+    left: 18px; right: -4px; top: 9px; bottom: auto; width: auto; height: 2px;
+  }
+  .pl-dot { margin: 0; }
+}
+
+/* The Head Sahayak's comment, wherever it appears. Tinted by outcome so a
+   forward and a rejection are never mistaken for each other. */
+.stage-note {
+  padding: 10px 12px; border-radius: 8px; font-size: 14px; margin-bottom: 9px;
+  background: var(--indigo-50); border: 1px solid var(--indigo-200); color: var(--indigo-700);
+}
+.stage-note.stop { background: var(--red-50); border-color: var(--red-200); color: var(--red-700); }
+.stage-note:last-child { margin-bottom: 0; }
+
+/* Requested next to sanctioned in the support callout. */
+.money-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 400px) { .money-pair { grid-template-columns: 1fr; } }
+.support-amount.muted   { color: var(--slate-400); }
+.support-amount.granted { color: var(--green-800); }
+.support-amount .await {
+  display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--slate-400); margin-top: 2px;
+}
+.support-amount .delta {
+  display: block; font-size: 12px; font-weight: 700; margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.support-amount .delta.up   { color: var(--indigo-700); }
+.support-amount .delta.down { color: var(--amber-700); }
+
+/* Echo of what the MLA is about to sanction, under the amount field. An extra
+   or missing digit is easy to type and nearly invisible in a bare number. */
+.sanction-preview {
+  border: 1px solid var(--green-100); background: var(--green-50);
+  border-radius: 10px; padding: 11px 13px; margin: -4px 0 14px;
+}
+.sanction-preview .l {
+  display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--green-800); opacity: .75;
+}
+.sanction-preview .v {
+  display: block; font-size: 20px; font-weight: 700; color: var(--green-800);
+  font-variant-numeric: tabular-nums; line-height: 1.2;
+}
+.sanction-preview .d { font-size: 12.5px; font-weight: 650; margin-top: 5px; }
+.sanction-preview .d.up   { color: var(--indigo-700); }
+.sanction-preview .d.down { color: var(--amber-700); }
+
+/* One line of context above an action panel, so the buttons never have to
+   explain themselves. */
+.panel-hint { font-size: 12.5px; color: var(--slate-500); margin: 6px 0 10px; line-height: 1.45; }
+
+/* The sidebar Status card carries the full-sentence badge ("Verified by Head
+   Sahayak — awaiting MLA decision"). `.badge` is nowrap so a short badge never
+   breaks mid-word in a list row, but a sentence has to wrap: left nowrap it is
+   far wider than the 300px sidebar track, and it pushes the decision buttons
+   off the right-hand edge of the screen. */
+.detail-side .badge {
+  white-space: normal;
+  display: inline-block;
+  line-height: 1.4;
+  max-width: 100%;
+}

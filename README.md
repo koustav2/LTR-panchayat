@@ -3,16 +3,38 @@
 Mobile-first web application for recording and reviewing Sahayak support
 applications across Dharmasala and Rasulpur Dharasamal blocks.
 
-Two roles, both seeded directly in the database — there is no signup and no
+Three roles, all seeded directly in the database — there is no signup and no
 user-management screen:
 
 | Role | What they do |
 |---|---|
-| **Supervisor** | Fills the Sahayak Form; sees their own submissions and statuses |
-| **MLA** | Sees every submission; accepts or rejects with a reason; exports CSV |
+| **Supervisor** | Fills the Sahayak Form; sees their own submissions and where each has reached |
+| **Head Sahayak** | Verifies every new form and either sends it to the MLA or rejects it, with a comment either way; sees all forms and the money rollup |
+| **MLA** | Decides the forms the Head Sahayak has forwarded; sets the amount actually sanctioned; exports CSV |
+
+An application moves in one direction only:
+
+```
+supervisor submits
+      |
+      v
+ pending_head  ── head rejects (comment) ──▶  head_rejected   (final)
+      |
+      | head forwards (comment)
+      v
+ pending_mla   ── MLA rejects (reason)   ──▶  rejected        (final)
+      |
+      | MLA accepts (sets the sanctioned amount)
+      v
+   accepted                                                   (final)
+```
+
+A form the Head Sahayak rejects still appears in the MLA's list — marked
+"Rejected by Head Sahayak" with the head's comment — but the MLA cannot act on
+it. That rejection is final.
 
 **Stack:** React 18 + Vite · Node 20 + Express · MySQL 8 · Docker Compose
-**Bundle:** 63 KB gzipped · **Tests:** 110 API + 51 journey + 37 responsive + 42 detail/amount checks, all passing
+**Bundle:** 67 KB gzipped · **Tests:** 155 API + 71 journey + 47 responsive + 58 attachment/amount checks, all passing
 
 ---
 
@@ -36,6 +58,7 @@ Open **http://localhost:8080** (or your server's address on `HTTP_PORT`).
 | Username | Password | Role |
 |---|---|---|
 | `mla` | `Mla@2026#LRT` | MLA |
+| `head` | `Head@2026#LRT` | Head Sahayak — covers both blocks |
 | `sup.dharma` | `Sup@2026#DHM` | Supervisor — Dharmasala |
 | `sup.rasul` | `Sup@2026#RSD` | Supervisor — Rasulpur Dharasamal |
 
@@ -45,6 +68,24 @@ cd api && npm run hash-password -- "YourNewStrongPassword"
 docker compose exec db mysql -u root -p lrt_panchayat \
   -e "UPDATE users SET password_hash='<paste>' WHERE username='mla';"
 ```
+
+### Upgrading an existing deployment to the three-stage flow
+
+`db/init/` only runs against an empty database, so a running instance needs the
+migration applied by hand (see *Applying a schema change*, below):
+
+```bash
+docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat \
+  < db/migrations/003_head_sahayak.sql
+```
+
+It adds the role and the new columns, seeds the `head` account, and moves every
+application that was `pending` to `pending_mla` — they were filed before the
+verification stage existed, so they are treated as already verified and go
+straight to the MLA rather than being pushed back into a queue that did not
+exist when they were submitted. Applications already `accepted` get
+`approved_amount = amount`, because at the time there was no way to sanction a
+different figure. The migration is safe to run more than once.
 
 ---
 
@@ -93,8 +134,12 @@ cd web && npm install && npm run dev
 ## Tests
 
 ```bash
-# API — 68 checks against a running server
+# API — 155 checks against a running server
 cd api && BASE=http://localhost:4000 npm run smoke
+
+# Concurrency — 150 simultaneous submissions for brand-new Aadhaars.
+# Forces the gap-lock deadlock and proves the transaction retry absorbs it.
+cd api && BASE=http://localhost:4000 npm run stress
 
 # Browser — 50 checks on a 390px viewport, screenshots into web/screens/
 cd web && npm install playwright && node e2e.mjs
@@ -156,21 +201,38 @@ Every file in `db/migrations/` is safe to run more than once.
 
 ### Amount totals
 
-Each application carries an `amount` (DECIMAL, never FLOAT — money summed as
-binary floating point drifts, and these totals get reported upward).
+Every application carries **two** money figures, and they must never be read as
+one:
 
-`GET /api/applications/summary` rolls them up by block, then by panchayat:
+| Column | Meaning | Set by |
+|---|---|---|
+| `amount` | What the supervisor filed for | Supervisor, at submission |
+| `approved_amount` | What the MLA actually sanctioned | MLA, on acceptance |
+
+Both are DECIMAL, never FLOAT — money summed as binary floating point drifts,
+and these totals get reported upward.
+
+When the MLA accepts, the sanctioned amount defaults to the requested amount but
+can be raised or lowered before confirming. It must be greater than zero: an
+acceptance worth nothing is a rejection with extra steps. `approved_amount` stays
+NULL until the MLA decides, so the UI shows a dash rather than a zero — "nothing
+sanctioned yet" and "sanctioned nothing" are different facts.
+
+`GET /api/applications/summary` rolls both up by block, then by panchayat:
 
 ```
-requested = accepted + pending
+requested  = with-head + with-MLA + (requested on accepted forms)
+sanctioned = SUM(approved_amount) on accepted forms
+variance   = sanctioned − requested-on-accepted     (the MLA's net adjustment)
 ```
 
-A **rejected** application is deliberately excluded from *requested* — once the
-MLA has turned it down it is no longer money being asked for. It is reported in
-its own column so the figure stays visible rather than vanishing. The dashboard
-states the rule on screen so nobody has to guess.
+**Rejected** applications — by the Head Sahayak or by the MLA — are excluded
+from *requested*: once turned down that is no longer money being asked for. Each
+gets its own column so the figure stays visible rather than vanishing. The
+dashboard states the rule on screen so nobody has to guess.
 
-The endpoint is MLA-only, enforced server-side.
+The endpoint is open to the Head Sahayak and the MLA, enforced server-side. Both
+see identical figures.
 
 ### One Aadhaar, many applications
 
@@ -196,6 +258,22 @@ as a second line of defence. Two supervisors submitting at the same instant
 serialise on the counter row rather than both reading the same value. Verified
 by an eight-way concurrent submission in the smoke test.
 
+### Deadlocks are retried, not surfaced
+
+A brand-new Aadhaar has no `beneficiaries` row, so `SELECT ... FOR UPDATE` takes
+a *gap* lock on the unique index. Gap locks are mutually compatible, and then
+every one of those transactions tries to `INSERT` into the same gap — so several
+supervisors filing for the same new person at the same instant will deadlock,
+and InnoDB will pick a victim. That is normal, and MySQL says what to do about
+it: *try restarting transaction*.
+
+`transaction()` in `api/src/db.js` does exactly that — up to four attempts with
+jittered backoff, on `ER_LOCK_DEADLOCK` and `ER_LOCK_WAIT_TIMEOUT` only. A retry
+re-runs the whole callback against a clean slate, so no reference number is
+burned by a rolled-back attempt. `npm run stress` fires 150 colliding
+submissions and asserts that none of them returns a 5xx and no reference number
+repeats.
+
 ### Aadhaar protection
 
 Stored twice: AES-256-GCM ciphertext (reversible, revealed only on the detail
@@ -212,6 +290,17 @@ results and CSV exports only ever show `XXXX XXXX 1234`.
 Enforced on the server for every endpoint. A supervisor cannot widen their view
 by editing a URL or a request body — hiding buttons in the UI is a convenience,
 not the control.
+
+| Capability | Supervisor | Head Sahayak | MLA |
+|---|---|---|---|
+| Submit an application | ✓ | — | — |
+| List / view | own only | all | all |
+| Verify → MLA, or reject | — | ✓ (`pending_head` only) | — |
+| Accept / reject, set sanctioned amount | — | — | ✓ (`pending_mla` only) |
+| Amount rollup, CSV export | — | ✓ | ✓ |
+
+Each stage guard is repeated in the `UPDATE`'s `WHERE` clause, so two people
+acting at the same instant cannot both win — the second gets a 409.
 
 ### Two layouts, one codebase
 
@@ -248,10 +337,12 @@ db/init/                 Schema and seed data, applied in filename order
   003_seed_users.sql     The two roles' accounts
 api/
   src/routes/            auth, master, beneficiaries, applications, files
+  src/lib/status.js      The five stages and the transitions between them
   src/lib/crypto.js      scrypt passwords, AES + SHA-256 Aadhaar
   src/lib/reference.js   Transactional reference numbers
   scripts/hash-password.js
-  scripts/smoke-test.js  68 API checks
+  scripts/smoke-test.js  155 API checks
+  scripts/stress-concurrency.mjs  Deliberate deadlock, to exercise the retry
 web/
   src/pages/             Login, Dashboard, SahayakForm, FormList, FormDetail
   e2e.mjs                50 browser checks on a phone viewport

@@ -59,8 +59,20 @@ export const api = {
   getApplication: (id, reveal) =>
     request('GET', `/applications/${id}${reveal ? '?revealAadhaar=true' : ''}`),
   createApplication: (payload) => request('POST', '/applications', payload),
-  setStatus: (id, status, rejectionReason, comment) =>
-    request('PATCH', `/applications/${id}/status`, { status, rejectionReason, comment }),
+  // MLA decision. `approvedAmount` is only read on an acceptance; leaving it
+  // undefined sanctions the full requested amount.
+  setStatus: (id, { status, approvedAmount, rejectionReason, comment }) =>
+    request('PATCH', `/applications/${id}/status`, {
+      status,
+      approvedAmount,
+      rejectionReason,
+      comment,
+    }),
+
+  // Head Sahayak verification. decision is 'forward' or 'reject'; the comment
+  // is required either way.
+  verifyApplication: (id, decision, comment) =>
+    request('PATCH', `/applications/${id}/verify`, { decision, comment }),
 
   uploadFile: (file, kind) => {
     const fd = new FormData();

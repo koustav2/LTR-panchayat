@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS users (
   full_name      VARCHAR(120) NOT NULL,
   username       VARCHAR(60)  NOT NULL,
   password_hash  VARCHAR(255) NOT NULL,
-  role           ENUM('supervisor','mla') NOT NULL,
+  -- supervisor files, head_sahayak verifies, mla decides. Seeded by SQL only.
+  role           ENUM('supervisor','head_sahayak','mla') NOT NULL,
   block_id       INT UNSIGNED NULL,
   is_active      TINYINT(1) NOT NULL DEFAULT 1,
   last_login_at  DATETIME NULL,
@@ -150,6 +151,10 @@ CREATE TABLE IF NOT EXISTS applications (
   -- Amount of support sought, in rupees. DECIMAL, never FLOAT — money summed
   -- as binary floating point drifts, and these totals are reported upward.
   amount            DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  -- What the MLA actually sanctions. NULL until they decide. May be higher or
+  -- lower than `amount` — every total describing money *granted* reads this
+  -- column, and every total describing money *asked for* reads `amount`.
+  approved_amount   DECIMAL(12,2) NULL,
 
   pp_recommend      ENUM('yes','no') NOT NULL,
   pp_comment        TEXT NULL,
@@ -158,7 +163,20 @@ CREATE TABLE IF NOT EXISTS applications (
   mp_recommend      ENUM('yes','no') NOT NULL,
   mp_comment        TEXT NULL,
 
-  status            ENUM('pending','accepted','rejected') NOT NULL DEFAULT 'pending',
+  -- Head Sahayak verification. A comment is required whether they forward the
+  -- application to the MLA or reject it, so there is always a record of why.
+  head_comment      TEXT NULL,
+  head_reviewed_by  INT UNSIGNED NULL,
+  head_reviewed_at  DATETIME NULL,
+
+  -- The three-stage pipeline, in order:
+  --   pending_head   filed, waiting on the Head Sahayak
+  --   pending_mla    forwarded by the Head Sahayak, waiting on the MLA
+  --   head_rejected  turned down by the Head Sahayak — terminal, never reaches the MLA for a decision
+  --   accepted       MLA accepted; approved_amount is set
+  --   rejected       MLA rejected; rejection_reason is set
+  status            ENUM('pending_head','pending_mla','head_rejected','accepted','rejected')
+                      NOT NULL DEFAULT 'pending_head',
   -- Required when rejecting; shown to the supervisor as the reason.
   rejection_reason  TEXT NULL,
   -- Optional note the MLA can leave when accepting (or alongside a rejection).
@@ -179,12 +197,14 @@ CREATE TABLE IF NOT EXISTS applications (
   KEY ix_app_applicant_name (applicant_name),
   KEY ix_app_rollup (block_id, panchayat_id, status),
   KEY ix_app_phone (phone),
+  KEY ix_app_head_reviewer (head_reviewed_by),
   CONSTRAINT fk_app_beneficiary FOREIGN KEY (beneficiary_id)    REFERENCES beneficiaries (id),
   CONSTRAINT fk_app_block       FOREIGN KEY (block_id)          REFERENCES blocks (id),
   CONSTRAINT fk_app_panchayat   FOREIGN KEY (panchayat_id)      REFERENCES panchayats (id),
   CONSTRAINT fk_app_type        FOREIGN KEY (support_type_id)   REFERENCES support_types (id),
   CONSTRAINT fk_app_reason      FOREIGN KEY (support_reason_id) REFERENCES support_reasons (id),
   CONSTRAINT fk_app_reviewer    FOREIGN KEY (reviewed_by)       REFERENCES users (id),
+  CONSTRAINT fk_app_head_reviewer FOREIGN KEY (head_reviewed_by) REFERENCES users (id),
   CONSTRAINT fk_app_submitter   FOREIGN KEY (submitted_by)      REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

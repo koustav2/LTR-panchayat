@@ -48,10 +48,70 @@ export function YesNo({ value, onChange, name }) {
   );
 }
 
-export function StatusBadge({ status }) {
-  const label = { pending: 'Pending', accepted: 'Accepted', rejected: 'Rejected' }[status] || status;
-  return <span className={`badge ${status}`}>{label}</span>;
+/**
+ * The five stages, and what each one is called on screen.
+ *
+ * `short` is what fits in a list row or a table cell; `long` is the full
+ * sentence used on the detail page and in empty states. Both live here so a
+ * stage is never described two different ways in two different places.
+ */
+export const STAGES = {
+  pending_head: {
+    short: 'With Head Sahayak',
+    long: 'Verification pending from Head Sahayak',
+    tone: 'wait',
+  },
+  pending_mla: {
+    short: 'With MLA',
+    long: 'Verified by Head Sahayak — awaiting MLA decision',
+    tone: 'sent',
+  },
+  head_rejected: {
+    short: 'Rejected by Head',
+    long: 'Rejected by Head Sahayak',
+    tone: 'stop',
+  },
+  accepted: {
+    short: 'Accepted',
+    long: 'Accepted by MLA',
+    tone: 'good',
+  },
+  rejected: {
+    short: 'Rejected by MLA',
+    long: 'Rejected by MLA',
+    tone: 'stop',
+  },
+};
+
+export function stageLabel(status, long = false) {
+  const s = STAGES[status];
+  if (!s) return status;
+  return long ? s.long : s.short;
 }
+
+export function StatusBadge({ status, long = false }) {
+  return <span className={`badge ${status}`}>{stageLabel(status, long)}</span>;
+}
+
+/**
+ * Each role has exactly one queue that is *theirs* — the stage where an
+ * application is waiting on them personally. That count is what the sidebar
+ * badge shows, which chip sorts first, and which counter tile is ringed,
+ * because it is the only number that means work to do rather than work in
+ * progress. Supervisors have none: they file and then wait.
+ */
+export const MY_QUEUE = {
+  supervisor: null,
+  head_sahayak: 'pending_head',
+  mla: 'pending_mla',
+};
+
+/** What each role is called on screen. */
+export const ROLE_LABEL = {
+  supervisor: 'Supervisor',
+  head_sahayak: 'Head Sahayak',
+  mla: 'MLA',
+};
 
 export function Banner({ kind = 'info', icon, children }) {
   const defaultIcon = { info: 'i', success: '✓', warn: '!', error: '!' }[kind];
@@ -152,4 +212,26 @@ export function formatMoney(value, { compact = true } = {}) {
     minimumFractionDigits: compact ? 0 : 2,
     maximumFractionDigits: compact ? 0 : 2,
   }).format(n);
+}
+
+/**
+ * The MLA's adjustment, written the way it reads on a ledger: +₹2,000 when they
+ * sanctioned more than was asked, −₹2,000 when they cut it. Returns null when
+ * there is nothing to say, so callers can skip rendering entirely rather than
+ * printing a meaningless zero.
+ */
+export function formatDelta(requested, sanctioned) {
+  if (sanctioned == null) return null;
+  const d = Number(sanctioned) - Number(requested);
+  if (!Number.isFinite(d) || Math.round(d * 100) === 0) return null;
+  const sign = d > 0 ? '+' : '\u2212';
+  return `${sign}${formatMoney(Math.abs(d))}`;
+}
+
+/** 'up' | 'down' — drives the colour of the adjustment, nothing else. */
+export function deltaDirection(requested, sanctioned) {
+  if (sanctioned == null) return null;
+  const d = Number(sanctioned) - Number(requested);
+  if (!Number.isFinite(d) || Math.round(d * 100) === 0) return null;
+  return d > 0 ? 'up' : 'down';
 }

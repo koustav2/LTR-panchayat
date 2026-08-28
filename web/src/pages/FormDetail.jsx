@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { DeskHead, StatusBadge, Banner, Modal, Field, formatDate, formatMoney } from '../components/ui';
+import {
+  DeskHead, StatusBadge, Banner, Modal, Field,
+  formatDate, formatMoney, stageLabel,
+} from '../components/ui';
 
 function Row({ k, v, full }) {
   return (
@@ -25,6 +28,61 @@ function Recommendation({ who, value, comment }) {
   );
 }
 
+/**
+ * The three-stage progress rail.
+ *
+ * Reading a status word tells you where a form is; this tells you how far it
+ * has come and what is left, which is the question anyone opening this page is
+ * actually asking. A rejection stops the rail at the stage that ended it.
+ */
+function Pipeline({ app }) {
+  const s = app.status;
+  const headDone = s !== 'pending_head';
+  const headRejected = s === 'head_rejected';
+  const mlaDone = s === 'accepted' || s === 'rejected';
+
+  const step = (state, title, sub) => (
+    <div className={`pl-step ${state}`}>
+      <span className="pl-dot" aria-hidden="true" />
+      <div>
+        <div className="pl-t">{title}</div>
+        <div className="pl-s">{sub}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="pipeline" role="list" aria-label="Application progress">
+      {step('done', 'Submitted', `${app.submittedByName} · ${formatDate(app.submittedAt)}`)}
+      {step(
+        headRejected ? 'stop' : headDone ? 'done' : 'now',
+        'Head Sahayak',
+        // Applications filed before this stage existed were migrated straight
+        // to the MLA and carry no verification date. "Verified · —" reads as a
+        // bug; the bare word is the truth.
+        headRejected
+          ? `Rejected${app.headReviewedAt ? ` · ${formatDate(app.headReviewedAt)}` : ''}`
+          : headDone
+          ? `Verified${app.headReviewedAt ? ` · ${formatDate(app.headReviewedAt)}` : ''}`
+          : 'Verification pending'
+      )}
+      {step(
+        headRejected ? 'skip' : s === 'rejected' ? 'stop' : mlaDone ? 'done' : headDone ? 'now' : 'todo',
+        'MLA',
+        headRejected
+          ? 'Not reached'
+          : s === 'accepted'
+          ? `Accepted · ${formatDate(app.reviewedAt)}`
+          : s === 'rejected'
+          ? `Rejected · ${formatDate(app.reviewedAt)}`
+          : headDone
+          ? 'Awaiting decision'
+          : 'Not yet'
+      )}
+    </div>
+  );
+}
+
 export default function FormDetail() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -33,12 +91,20 @@ export default function FormDetail() {
   const [app, setApp] = useState(null);
   const [error, setError] = useState('');
   const [revealed, setRevealed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  // MLA
   const [rejecting, setRejecting] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [reason, setReason] = useState('');
   const [comment, setComment] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [sanction, setSanction] = useState('');
+
+  // Head Sahayak
+  const [forwarding, setForwarding] = useState(false);
+  const [headRejecting, setHeadRejecting] = useState(false);
+  const [headComment, setHeadComment] = useState('');
 
   const load = useCallback(
     async (reveal = false) => {
@@ -57,30 +123,79 @@ export default function FormDetail() {
     load(false);
   }, [load]);
 
+  const closeAll = () => {
+    setRejecting(false);
+    setAccepting(false);
+    setForwarding(false);
+    setHeadRejecting(false);
+  };
+
   async function decide(status, rejectionReason) {
     setBusy(true);
     try {
-      await api.setStatus(id, status, rejectionReason, comment.trim());
-      setRejecting(false);
-      setAccepting(false);
+      await api.setStatus(id, {
+        status,
+        approvedAmount: status === 'accepted' ? sanction.replace(/[,\s₹]/g, '') : undefined,
+        rejectionReason,
+        comment: comment.trim(),
+      });
+      closeAll();
       setReason('');
       setComment('');
       setNotice(status === 'accepted' ? 'Application accepted.' : 'Application rejected.');
       await load(revealed);
     } catch (err) {
       setError(err.message);
-      setRejecting(false);
-      setAccepting(false);
+      closeAll();
     } finally {
       setBusy(false);
     }
   }
 
+  async function verify(decision) {
+    setBusy(true);
+    try {
+      await api.verifyApplication(id, decision, headComment.trim());
+      closeAll();
+      setHeadComment('');
+      setNotice(
+        decision === 'forward'
+          ? 'Sent to the MLA for approval.'
+          : 'Application rejected. The MLA will see it as rejected by you.'
+      );
+      await load(revealed);
+    } catch (err) {
+      setError(err.message);
+      closeAll();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The sanctioned amount the MLA is about to set, parsed the same way the
+  // server parses it, so the preview below the field can never disagree with
+  // what gets saved.
+  const sanctionNum = useMemo(() => {
+    const raw = sanction.replace(/[,\s₹]/g, '');
+    if (!/^\d+(\.\d{1,2})?$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [sanction]);
+
   if (error && !app) return <Banner kind="error">{error}</Banner>;
   if (!app) return <div className="skeleton" style={{ height: 320 }} />;
 
+  const isHead = user.role === 'head_sahayak';
   const isMla = user.role === 'mla';
-  const canDecide = isMla && app.status === 'pending';
+
+  const canVerify = isHead && app.status === 'pending_head';
+  const canDecide = isMla && app.status === 'pending_mla';
+  // The MLA can see a form still in verification, and one the head turned down,
+  // but can act on neither. Saying so beats an unexplained missing button.
+  const mlaBlocked = isMla && (app.status === 'pending_head' || app.status === 'head_rejected');
+
+  const delta = app.approvedAmount == null ? 0 : app.approvedAmount - app.amount;
+
   // A repeat applicant often does not re-upload their photo, so nothing of
   // kind 'applicant_photo' is attached to this particular application. Fall
   // back to the photo held on the beneficiary record.
@@ -116,11 +231,27 @@ export default function FormDetail() {
           </div>
         </div>
 
-        {(app.status === 'rejected' || app.mlaComment) && (
+        <div className="detail-group">
+          <h3>Progress</h3>
+          <Pipeline app={app} />
+        </div>
+
+        {/* Everything anyone said about the decision, in the order it was said. */}
+        {(app.headComment || app.rejectionReason || app.mlaComment) && (
           <div className="detail-group">
-            {app.status === 'rejected' && (
-              <div className="row-reject" style={{ marginTop: 0 }}>
-                <strong>Rejection reason:</strong> {app.rejectionReason}
+            {app.headComment && (
+              <div className={`stage-note head ${app.status === 'head_rejected' ? 'stop' : ''}`}>
+                <strong>
+                  Head Sahayak
+                  {app.status === 'head_rejected' ? ' — rejected' : ' — sent to MLA'}
+                  {app.headReviewedByName ? ` (${app.headReviewedByName})` : ''}:
+                </strong>{' '}
+                {app.headComment}
+              </div>
+            )}
+            {app.status === 'rejected' && app.rejectionReason && (
+              <div className="row-reject">
+                <strong>MLA rejection reason:</strong> {app.rejectionReason}
               </div>
             )}
             {app.mlaComment && (
@@ -131,9 +262,9 @@ export default function FormDetail() {
           </div>
         )}
 
-        {/* What the applicant is actually asking for. Called out as its own
-            section rather than buried in the subtitle — it is the first thing
-            a reviewer looks for. */}
+        {/* What the applicant is asking for, and what they were granted. Called
+            out as its own section rather than buried in the subtitle — it is
+            the first thing a reviewer looks for. */}
         <div className="detail-group">
           <h3>Support Requested</h3>
           <div className="support-callout">
@@ -146,8 +277,39 @@ export default function FormDetail() {
               <div className="support-reason">{app.supportReason}</div>
             </div>
             <div className="amount-cell">
-              <div className="k">Amount Requested</div>
-              <div className="support-amount">{formatMoney(app.amount, { compact: app.amount % 1 === 0 })}</div>
+              <div className="money-pair">
+                <div>
+                  <div className="k">Amount Requested</div>
+                  <div className="support-amount">
+                    {formatMoney(app.amount, { compact: app.amount % 1 === 0 })}
+                  </div>
+                </div>
+                <div>
+                  <div className="k">Amount Sanctioned</div>
+                  {app.approvedAmount == null ? (
+                    <div className="support-amount muted">
+                      —
+                      <span className="await">
+                        {app.status === 'pending_head'
+                          ? 'not yet verified'
+                          : app.status === 'pending_mla'
+                          ? 'awaiting MLA'
+                          : 'not sanctioned'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="support-amount granted">
+                      {formatMoney(app.approvedAmount, { compact: app.approvedAmount % 1 === 0 })}
+                      {Math.round(delta * 100) !== 0 && (
+                        <span className={`delta ${delta > 0 ? 'up' : 'down'}`}>
+                          {delta > 0 ? '+' : '−'}
+                          {formatMoney(Math.abs(delta))} vs requested
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -238,24 +400,56 @@ export default function FormDetail() {
       <aside className="detail-side">
         <div className="card">
           <h4>Status</h4>
-          <StatusBadge status={app.status} />
+          <StatusBadge status={app.status} long />
           <div className="dl" style={{ marginTop: 12, gridTemplateColumns: '1fr' }}>
             <Row k="Submitted by" v={app.submittedByName} />
             <Row k="Submitted on" v={formatDate(app.submittedAt, true)} />
-            {app.reviewedAt && <Row k="Reviewed by" v={app.reviewedByName} />}
-            {app.reviewedAt && <Row k="Reviewed on" v={formatDate(app.reviewedAt, true)} />}
+            {app.headReviewedAt && <Row k="Verified by" v={app.headReviewedByName} />}
+            {app.headReviewedAt && <Row k="Verified on" v={formatDate(app.headReviewedAt, true)} />}
+            {app.reviewedAt && <Row k="Decided by" v={app.reviewedByName} />}
+            {app.reviewedAt && <Row k="Decided on" v={formatDate(app.reviewedAt, true)} />}
           </div>
         </div>
+
+        {canVerify && (
+          <div className="card">
+            <h4>Verification</h4>
+            <p className="panel-hint">
+              Send this to the MLA for approval, or reject it here. Either way a comment is required.
+            </p>
+            <div className="actionbar">
+              <div className="actionbar-inner">
+                <button className="btn btn-danger" disabled={busy} onClick={() => setHeadRejecting(true)}>
+                  Reject
+                </button>
+                <button className="btn btn-primary" disabled={busy} onClick={() => setForwarding(true)}>
+                  {busy ? <span className="spinner" /> : 'Send to MLA'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {canDecide && (
           <div className="card">
             <h4>Decision</h4>
+            <p className="panel-hint">
+              Accepting lets you set the amount actually sanctioned — it defaults to the{' '}
+              {formatMoney(app.amount)} requested.
+            </p>
             <div className="actionbar">
               <div className="actionbar-inner">
                 <button className="btn btn-danger" disabled={busy} onClick={() => setRejecting(true)}>
                   Reject
                 </button>
-                <button className="btn btn-primary" disabled={busy} onClick={() => setAccepting(true)}>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={() => {
+                    setSanction(String(app.amount));
+                    setAccepting(true);
+                  }}
+                >
                   {busy ? <span className="spinner" /> : 'Accept'}
                 </button>
               </div>
@@ -263,7 +457,29 @@ export default function FormDetail() {
           </div>
         )}
 
-        {!canDecide && (
+        {mlaBlocked && (
+          <div className="card">
+            <h4>Decision</h4>
+            <Banner kind={app.status === 'head_rejected' ? 'warn' : 'info'}>
+              {app.status === 'head_rejected'
+                ? 'The Head Sahayak rejected this application, so it does not come to you for a decision.'
+                : 'The Head Sahayak has not verified this application yet. It will appear for decision once they send it on.'}
+            </Banner>
+          </div>
+        )}
+
+        {isHead && app.status !== 'pending_head' && (
+          <div className="card">
+            <h4>Verification</h4>
+            <Banner kind="info">
+              {app.status === 'head_rejected'
+                ? 'You rejected this application. That decision is final.'
+                : `You already sent this to the MLA — it is now ${stageLabel(app.status, true).toLowerCase()}.`}
+            </Banner>
+          </div>
+        )}
+
+        {!canVerify && !canDecide && (
           <button className="btn btn-ghost btn-block" onClick={() => navigate('/forms')}>
             Back to list
           </button>
@@ -271,34 +487,134 @@ export default function FormDetail() {
       </aside>
       </div>
 
-      {accepting && (
+      {/* ---------------------------------------------- Head Sahayak: forward */}
+      {forwarding && (
         <Modal
-          title="Accept this application"
-          description="Add a comment if you want one on the record. Optional."
-          onClose={() => setAccepting(false)}
+          title="Send to the MLA"
+          description="Your comment goes to the MLA with the application, and is visible to the supervisor who filed it."
+          onClose={() => setForwarding(false)}
           actions={
             <>
-              <button className="btn btn-ghost" onClick={() => setAccepting(false)}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" disabled={busy} onClick={() => decide('accepted')}>
-                {busy ? <span className="spinner" /> : 'Accept'}
+              <button className="btn btn-ghost" onClick={() => setForwarding(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={busy || headComment.trim().length < 3}
+                onClick={() => verify('forward')}
+              >
+                {busy ? <span className="spinner" /> : 'Send to MLA'}
               </button>
             </>
           }
         >
-          <Field label="Comment" hint="Visible to the supervisor who submitted the form">
+          <Field label="Verification comment" required hint="What you checked, and anything the MLA should know">
             <textarea
-              data-field="mlaComment"
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="e.g. Approved for Rs. 10,000 towards hospital bill"
+              data-field="headComment"
+              value={headComment}
+              onChange={(e) => setHeadComment(e.target.value)}
+              placeholder="e.g. Documents verified at panchayat office. Hospital estimate matches the amount."
               autoFocus
             />
           </Field>
         </Modal>
       )}
 
+      {/* ----------------------------------------------- Head Sahayak: reject */}
+      {headRejecting && (
+        <Modal
+          title="Reject this application"
+          description="It will not go to the MLA for a decision. The MLA and the supervisor both see your reason."
+          onClose={() => setHeadRejecting(false)}
+          actions={
+            <>
+              <button className="btn btn-ghost" onClick={() => setHeadRejecting(false)}>Cancel</button>
+              <button
+                className="btn btn-danger"
+                disabled={busy || headComment.trim().length < 3}
+                onClick={() => verify('reject')}
+              >
+                {busy ? <span className="spinner" /> : 'Reject'}
+              </button>
+            </>
+          }
+        >
+          <Field label="Reason for rejection" required>
+            <textarea
+              data-field="headComment"
+              value={headComment}
+              onChange={(e) => setHeadComment(e.target.value)}
+              placeholder="e.g. Income certificate missing; applicant already assisted this year"
+              autoFocus
+            />
+          </Field>
+        </Modal>
+      )}
+
+      {/* ------------------------------------------------------- MLA: accept */}
+      {accepting && (
+        <Modal
+          title="Accept this application"
+          description={`Requested: ${formatMoney(app.amount)}. Change the figure below if you are sanctioning a different amount.`}
+          onClose={() => setAccepting(false)}
+          actions={
+            <>
+              <button className="btn btn-ghost" onClick={() => setAccepting(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={busy || sanctionNum === null}
+                onClick={() => decide('accepted')}
+              >
+                {busy ? <span className="spinner" /> : 'Accept'}
+              </button>
+            </>
+          }
+        >
+          <Field
+            label="Amount sanctioned"
+            required
+            error={sanction && sanctionNum === null ? 'Enter an amount greater than zero.' : undefined}
+            hint={sanctionNum === null ? 'In rupees' : undefined}
+          >
+            <input
+              className="amount-field"
+              data-field="approvedAmount"
+              type="text"
+              inputMode="decimal"
+              value={sanction}
+              onChange={(e) => setSanction(e.target.value)}
+              autoFocus
+            />
+          </Field>
+
+          {/* Echoed back grouped, with the difference spelled out. A deduction
+              of one digit is very easy to type and very hard to spot. */}
+          {sanctionNum !== null && (
+            <div className="sanction-preview">
+              <div>
+                <span className="l">Sanctioning</span>
+                <span className="v">{formatMoney(sanctionNum, { compact: sanctionNum % 1 === 0 })}</span>
+              </div>
+              {Math.round((sanctionNum - app.amount) * 100) !== 0 && (
+                <div className={`d ${sanctionNum > app.amount ? 'up' : 'down'}`}>
+                  {sanctionNum > app.amount ? '+' : '−'}
+                  {formatMoney(Math.abs(sanctionNum - app.amount))}{' '}
+                  {sanctionNum > app.amount ? 'above' : 'below'} the requested amount
+                </div>
+              )}
+            </div>
+          )}
+
+          <Field label="Comment" hint="Optional. Visible to the supervisor who submitted the form">
+            <textarea
+              data-field="mlaComment"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="e.g. Sanctioned towards hospital bill"
+            />
+          </Field>
+        </Modal>
+      )}
+
+      {/* ------------------------------------------------------- MLA: reject */}
       {rejecting && (
         <Modal
           title="Reject this application"
@@ -306,9 +622,7 @@ export default function FormDetail() {
           onClose={() => setRejecting(false)}
           actions={
             <>
-              <button className="btn btn-ghost" onClick={() => setRejecting(false)}>
-                Cancel
-              </button>
+              <button className="btn btn-ghost" onClick={() => setRejecting(false)}>Cancel</button>
               <button
                 className="btn btn-danger"
                 disabled={busy || reason.trim().length < 3}

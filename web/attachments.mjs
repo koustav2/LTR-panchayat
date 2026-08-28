@@ -53,7 +53,11 @@ async function login(page, u, p) {
 }
 
 /** Fills and submits one application. Returns its reference number. */
-async function submitForm(page, { supportType, supportReason, withFiles, amount = '12500' }) {
+/** The figure every form in this run is filed for, and what the MLA cuts it to. */
+const REQUESTED = '12500';
+const SANCTIONED = '9000';
+
+async function submitForm(page, { supportType, supportReason, withFiles, amount = REQUESTED }) {
   await page.goto(`${BASE}/form`, { waitUntil: 'networkidle' });
   await page.waitForSelector('[data-field="aadhaar"]');
 
@@ -153,8 +157,8 @@ console.log('\nSupervisor detail page');
   check('Reason of Support is shown',
     (await page.locator('.support-reason').textContent()) === 'School Admission Fee');
   check('Amount Requested is shown on the detail page',
-    ((await page.locator('.support-amount').textContent()) || '').includes('12,500'),
-    await page.locator('.support-amount').textContent());
+    ((await page.locator('.support-amount').first().textContent()) || '').includes('12,500'),
+    await page.locator('.support-amount').first().textContent());
 
   const photoImg = page.locator('.photo-tile img');
   check('applicant photo is rendered', await photoImg.isVisible());
@@ -229,7 +233,39 @@ console.log('\nDraft restored after reload still shows the photo');
 
 /* ------------------------------------------------- MLA accepts with note -- */
 
-console.log('\nMLA detail page and accept with a comment');
+// The MLA never sees an unverified form as actionable, so the Head Sahayak has
+// to send this one on first. That step is also where the attachments get their
+// first pair of eyes, so it is checked here rather than skipped past.
+console.log('\nHead Sahayak verifies the form with attachments');
+{
+  const { page, errs } = await session();
+  await login(page, 'head', 'Head@2026#LRT');
+  await page.goto(`${BASE}/forms`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1200);
+  await page.locator('table.data tr.clickable', { hasText: refWithFiles }).click();
+  await page.waitForSelector('.support-callout', { timeout: 10000 });
+
+  check('Head Sahayak sees the applicant photo',
+    await page.locator('.photo-tile img').isVisible());
+  check('Head Sahayak sees the supporting document',
+    (await page.locator('.attachments a').count()) >= 2);
+  const moneyText = (await page.locator('.money-pair').textContent()) || '';
+  check('sanctioned reads as not-yet-decided, never as zero',
+    moneyText.includes('not yet verified') && !/₹\s*0\b/.test(moneyText), moneyText);
+
+  await page.getByRole('button', { name: 'Send to MLA' }).click();
+  await page.waitForSelector('.modal');
+  await page.locator('.modal [data-field="headComment"]').fill('Photo and income certificate both checked.');
+  await page.locator('.modal').getByRole('button', { name: 'Send to MLA' }).click();
+  // The badge inside .detail-group is the phone-layout duplicate and is hidden
+  // from 1024px up, which is the width this suite runs at. The sidebar Status
+  // card carries it at every width.
+  await page.waitForSelector('.detail-side .badge.pending_mla', { timeout: 10000 });
+  await page.screenshot({ path: `${OUT}a2b-head-forwarded.png`, fullPage: true });
+  check('no page errors', errs.length === 0, errs.join('|'));
+}
+
+console.log('\nMLA detail page, amount edit, and accept with a comment');
 {
   const { page, errs } = await session();
   await login(page, 'mla', 'Mla@2026#LRT');
@@ -247,10 +283,29 @@ console.log('\nMLA detail page and accept with a comment');
   check('MLA sees the supporting document',
     (await page.locator('.attachments a').count()) >= 2);
 
+  check('the head’s comment carries through to the MLA',
+    ((await page.locator('.stage-note').textContent()) || '').includes('income certificate both checked'));
+
   await page.getByRole('button', { name: 'Accept' }).click();
   await page.waitForSelector('.modal');
   await page.screenshot({ path: `${OUT}a4-accept-modal.png`, fullPage: true });
   check('Accept opens a comment box', await page.locator('.modal [data-field="mlaComment"]').isVisible());
+  check('Accept prefills the sanctioned amount with what was requested',
+    (await page.locator('.modal [data-field="approvedAmount"]').inputValue()) === REQUESTED,
+    `${await page.locator('.modal [data-field="approvedAmount"]').inputValue()} vs ${REQUESTED}`);
+
+  // A zero sanction must be refused in the browser, not only by the server.
+  await page.locator('.modal [data-field="approvedAmount"]').fill('0');
+  await page.waitForTimeout(200);
+  check('a zero sanction disables Accept',
+    await page.locator('.modal').getByRole('button', { name: 'Accept' }).isDisabled());
+
+  // Deduct, and confirm the preview says so before anything is saved.
+  await page.locator('.modal [data-field="approvedAmount"]').fill(SANCTIONED);
+  await page.waitForTimeout(200);
+  check('the preview spells out the deduction',
+    ((await page.locator('.sanction-preview .d').textContent()) || '').includes('below the requested'));
+  await page.screenshot({ path: `${OUT}a4b-accept-deducted.png`, fullPage: true });
 
   await page.locator('.modal [data-field="mlaComment"]').fill('Approved for Rs. 10,000 towards school fees.');
   await page.locator('.modal').getByRole('button', { name: 'Accept' }).click();
@@ -261,6 +316,10 @@ console.log('\nMLA detail page and accept with a comment');
     (await page.locator('.detail-side .badge.accepted').isVisible()));
   check('the accept comment is displayed',
     ((await page.locator('.mla-note').textContent()) || '').includes('Rs. 10,000 towards school fees'));
+  check('the sanctioned amount replaces the dash',
+    ((await page.locator('.support-amount.granted').textContent()) || '').length > 0);
+  check('the deduction is shown against the requested figure',
+    ((await page.locator('.support-amount .delta').textContent()) || '').includes('vs requested'));
   check('no page errors', errs.length === 0, errs.join('|'));
 }
 
@@ -288,13 +347,29 @@ console.log('\nMLA dashboard amount summary');
   await page.screenshot({ path: `${OUT}a9-mla-summary.png`, fullPage: true });
 
   check('summary card is on the MLA dashboard', await page.locator('.summary-card').isVisible());
-  check('four headline tiles are shown', (await page.locator('.summary-tiles .stat').count()) === 4);
+  check('five headline tiles are shown — one per stage plus the two money totals',
+    (await page.locator('.summary-tiles .stat').count()) === 5,
+    await page.locator('.summary-tiles .stat').count());
   check('the rule is stated on screen',
-    ((await page.locator('.summary-note').textContent()) || '').includes('Requested = Accepted + Pending'));
+    ((await page.locator('.summary-note').textContent()) || '').includes('only counted once they decide'),
+    await page.locator('.summary-note').textContent());
 
   const headers = await page.locator('.summary-table th').allTextContents();
-  check('table has Requested / Accepted / Pending / Rejected columns',
-    ['Requested', 'Accepted', 'Pending', 'Rejected'].every((h) => headers.includes(h)), headers.join('|'));
+  check('the table separates requested from sanctioned',
+    ['Requested', 'Sanctioned', 'With Head', 'With MLA', 'Rejected'].every((h) => headers.includes(h)),
+    headers.join('|'));
+
+  // This run sanctioned 9,000 against a 12,500 request, so the two money tiles
+  // must disagree and the variance must name the 3,500 difference.
+  const requestedTile = (await page.locator('.summary-tiles .requested .n').textContent()) || '';
+  const sanctionedTile = (await page.locator('.summary-tiles .sanctioned .n').textContent()) || '';
+  check('the requested tile is not the sanctioned tile',
+    requestedTile !== sanctionedTile, `${requestedTile} vs ${sanctionedTile}`);
+  check('the sanctioned tile shows what the MLA actually granted',
+    sanctionedTile.includes('9,000'), sanctionedTile);
+  check('the MLA’s deduction is reported as a variance',
+    ((await page.locator('.summary-tiles .sanctioned .var').textContent()) || '').includes('3,500'),
+    await page.locator('.summary-tiles .sanctioned .c').textContent());
 
   check('block rows are present', (await page.locator('.summary-table .block-row').count()) >= 1);
   check('panchayat rows are shown under a block',
@@ -309,6 +384,18 @@ console.log('\nMLA dashboard amount summary');
   check('clicking a block collapses its panchayats', after < before, `${before} -> ${after}`);
 
   check('no page errors on the dashboard', errs.length === 0, errs.join('|'));
+}
+
+console.log('\nHead Sahayak sees the same summary as the MLA');
+{
+  const { page, errs } = await session();
+  await login(page, 'head', 'Head@2026#LRT');
+  await page.waitForSelector('.summary-card', { timeout: 15000 });
+  check('summary card is on the Head Sahayak dashboard',
+    await page.locator('.summary-card').isVisible());
+  check('the head sees the same sanctioned total as the MLA',
+    ((await page.locator('.summary-tiles .sanctioned .n').textContent()) || '').includes('9,000'));
+  check('no page errors on the head dashboard', errs.length === 0, errs.join('|'));
 }
 
 console.log('\nSupervisor must not see the summary');

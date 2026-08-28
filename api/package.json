@@ -3,13 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
-  "description": "Sahayak Form Portal API — LRT Panchayat",
+  "description": "Sahayak Form Portal API \u2014 LRT Panchayat",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "hash-password": "node scripts/hash-password.js",
-    "smoke": "node scripts/smoke-test.js"
+    "smoke": "node scripts/smoke-test.js",
+    "stress": "node scripts/stress-concurrency.mjs"
   },
   "dependencies": {
     "cookie-parser": "^1.4.6",

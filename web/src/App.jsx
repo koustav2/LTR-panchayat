@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import SahayakForm from './pages/SahayakForm';
 import FormList from './pages/FormList';
 import FormDetail from './pages/FormDetail';
+import { MY_QUEUE, ROLE_LABEL } from './components/ui';
 
 const TITLES = {
   '/': 'Sahayak Form Portal',
@@ -16,25 +17,28 @@ const TITLES = {
 
 /**
  * Sidebar — only rendered from 1024px up (CSS hides it below that, where the
- * mobile top bar takes over). The pending badge is refreshed whenever the
- * route changes, so a decision made on the detail page is reflected here.
+ * mobile top bar takes over). The badge counts the applications waiting on
+ * *this* role, and is refreshed whenever the route changes, so a decision made
+ * on the detail page is reflected here immediately.
  */
 function Sidebar() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const [pending, setPending] = useState(null);
+  const [waiting, setWaiting] = useState(null);
+  const queue = MY_QUEUE[user.role];
 
   useEffect(() => {
+    if (!queue) return undefined;
     let alive = true;
     api
       .listApplications({ page: 1 })
-      .then((d) => alive && setPending(d.counts.pending))
+      .then((d) => alive && setWaiting(d.counts[queue]))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [location.pathname]);
+  }, [location.pathname, queue]);
 
   const isForms = location.pathname.startsWith('/forms');
 
@@ -67,15 +71,15 @@ function Sidebar() {
 
         <button onClick={() => navigate('/forms')} aria-current={isForms ? 'page' : undefined}>
           <span className="ico" aria-hidden="true">☰</span>
-          {user.role === 'mla' ? 'All Forms' : 'My Forms'}
-          {pending > 0 && <span className="pill-count">{pending}</span>}
+          {user.role === 'supervisor' ? 'My Forms' : 'All Forms'}
+          {waiting > 0 && <span className="pill-count">{waiting}</span>}
         </button>
       </nav>
 
       <div className="sidebar-foot">
         <div className="sidebar-user">
           <div className="n">{user.fullName}</div>
-          <div className="r">{user.role === 'mla' ? 'MLA' : 'Supervisor'}</div>
+          <div className="r">{ROLE_LABEL[user.role] || user.role}</div>
         </div>
         <button onClick={logout}>Sign out</button>
       </div>
@@ -109,7 +113,7 @@ function Shell({ children }) {
           )}
           <div>
             <h1>{title}</h1>
-            {isRoot && <div className="sub">{user.role === 'mla' ? 'MLA' : 'Supervisor'}</div>}
+            {isRoot && <div className="sub">{ROLE_LABEL[user.role] || user.role}</div>}
           </div>
           <div className="spacer" />
           {isRoot && (
