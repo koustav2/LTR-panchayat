@@ -48,27 +48,37 @@ const upload = multer({
 
 router.use(requireAuth);
 
+const KINDS = ['applicant_photo', 'document', 'distribution_photo'];
+
 /**
  * POST /api/files  (multipart: file, kind)
  * Uploads are stored under UPLOAD_DIR, which lives outside the web root, and
  * are only ever streamed back through the authenticated GET below.
+ *
+ * The Head Sahayak can upload too, because either reviewer role may be the one
+ * recording a distribution in the field. They still cannot file an application.
  */
 router.post(
   '/',
-  requireRole('supervisor'),
+  requireRole('supervisor', 'head_sahayak'),
   upload.single('file'),
   async (req, res, next) => {
     try {
       if (!req.file) throw new ApiError(400, 'No file was uploaded.');
 
-      const kind = req.body.kind === 'applicant_photo' ? 'applicant_photo' : 'document';
+      const kind = KINDS.includes(req.body.kind) ? req.body.kind : 'document';
       const detected = sniff(req.file.buffer);
 
       if (!detected || !ALLOWED[detected]) {
         throw new ApiError(400, 'Only JPG, PNG, WEBP or PDF files are accepted.');
       }
-      if (kind === 'applicant_photo' && detected === 'application/pdf') {
-        throw new ApiError(400, 'The applicant photo must be an image, not a PDF.');
+      if (kind !== 'document' && detected === 'application/pdf') {
+        throw new ApiError(
+          400,
+          kind === 'applicant_photo'
+            ? 'The applicant photo must be an image, not a PDF.'
+            : 'The distribution photo must be an image, not a PDF.'
+        );
       }
 
       const stored = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ALLOWED[detected]}`;
@@ -110,8 +120,12 @@ router.post(
 
 /**
  * GET /api/files/:id — streams the file.
- * A supervisor may only read files attached to their own applications (or ones
- * they uploaded but have not yet attached). The MLA may read any.
+ *
+ * The reviewer roles may read any file. A supervisor may read a file that is
+ * attached to one of their own applications, one they uploaded themselves but
+ * have not attached yet, or anything hanging off an *accepted* application —
+ * because the approval list shows every accepted application to every Sahayak,
+ * and a list you can see whose photos you cannot open is a broken screen.
  */
 router.get('/:id', async (req, res, next) => {
   try {
@@ -141,7 +155,19 @@ router.get('/:id', async (req, res, next) => {
           LIMIT 1`,
         [id, req.user.id]
       );
-      if (!owned && !photoOwned && file.uploaded_by !== req.user.id) {
+      // Anything on an accepted application: its attachments, the beneficiary's
+      // photo, or the distribution photo.
+      const onApproved = await queryOne(
+        `SELECT 1 AS ok
+           FROM applications a
+           LEFT JOIN application_files af ON af.application_id = a.id
+           LEFT JOIN beneficiaries b      ON b.id = a.beneficiary_id
+          WHERE a.status = 'accepted'
+            AND (af.file_id = ? OR b.photo_file_id = ? OR a.distribution_photo_file_id = ?)
+          LIMIT 1`,
+        [id, id, id]
+      );
+      if (!owned && !photoOwned && !onApproved && file.uploaded_by !== req.user.id) {
         throw new ApiError(403, 'You do not have access to this file.');
       }
     }

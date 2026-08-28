@@ -275,6 +275,14 @@ against the new schema. That is unavoidable on a single-instance deploy and is
 the right trade: a supervisor retrying a submission once beats the app being
 broken until somebody remembers to migrate.
 
+### Camera capture needs TLS
+
+The handover photo is taken with `getUserMedia`, which browsers only expose in a
+secure context. Over `https://` it works; over plain `http://` it is simply
+absent and the app falls back to a capture-hinted file picker, which is exactly
+the gallery-reachable path the requirement rules out. Certbot is not optional
+here.
+
 ### Checking whether a migration has already been applied
 
 ```bash

@@ -41,6 +41,11 @@ function makeClient() {
     let payload;
     if (body instanceof FormData) {
       payload = body;
+    } else if (opts.contentType) {
+      // A hand-rolled multipart body (a Buffer) — used to exercise the upload
+      // route without pulling in a form-data dependency.
+      headers['Content-Type'] = opts.contentType;
+      payload = body;
     } else if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       payload = JSON.stringify(body);
@@ -116,9 +121,32 @@ const AADHAAR_B = '999971658847';
   const blockDhm = master.blocks.find((b) => b.code === 'DHM');
   const blockRsd = master.blocks.find((b) => b.code === 'RSD');
 
-  r = await sup('GET', `/api/master/panchayats?blockId=${blockDhm.id}`);
+  check('bootstrap carries zones', Array.isArray(master.zones) && master.zones.length === 6,
+    master.zones && master.zones.length);
+
+  r = await sup('GET', `/api/master/zones?blockId=${blockDhm.id}`);
+  const dhmZones = r.body.zones;
+  check('zones are filtered by block',
+    dhmZones.length === 3 && dhmZones.every((z) => z.block_id === blockDhm.id),
+    dhmZones.map((z) => z.name));
+
+  r = await sup('GET', `/api/master/zones?blockId=${blockRsd.id}`);
+  const rsdZones = r.body.zones;
+  check('the other block has its own zones',
+    rsdZones.length === 3 && !rsdZones.some((z) => dhmZones.find((d) => d.id === z.id)));
+
+  r = await sup('GET', `/api/master/panchayats?zoneId=${dhmZones[0].id}`);
   const dhmPanchayats = r.body.panchayats;
-  check('panchayats are filtered by block', dhmPanchayats.every((p) => p.block_id === blockDhm.id));
+  check('panchayats are filtered by zone',
+    dhmPanchayats.length === 10 && dhmPanchayats.every((p) => p.zone_id === dhmZones[0].id),
+    dhmPanchayats.length);
+
+  r = await sup('GET', `/api/master/panchayats?zoneId=${dhmZones[1].id}`);
+  check('a different zone returns different panchayats',
+    !r.body.panchayats.some((p) => dhmPanchayats.find((d) => d.id === p.id)));
+  check('panchayat names are unique across the block',
+    !r.body.panchayats.some((p) => dhmPanchayats.find((d) => d.name === p.name)),
+    r.body.panchayats.slice(0, 2).map((p) => p.name));
 
   const eduType = master.supportTypes.find((t) => t.name === 'Education');
   const healthType = master.supportTypes.find((t) => t.name === 'Health');
@@ -134,6 +162,7 @@ const AADHAAR_B = '999971658847';
     guardianName: 'Bhagaban Sahoo',
     phone: '9876543210',
     blockId: blockDhm.id,
+    zoneId: dhmZones[0].id,
     panchayatId: dhmPanchayats[0].id,
     pinCode: '755001',
     supportTypeId: eduType.id,
@@ -159,6 +188,19 @@ const AADHAAR_B = '999971658847';
     supportReasonId: healthReasons[0].id,
   });
   check('reason from a different support type is rejected', r.status === 400, r.body);
+
+  r = await sup('POST', '/api/applications', {
+    ...badBase, aadhaar: AADHAAR_A, zoneId: rsdZones[0].id,
+  });
+  check('a zone from another block is rejected', r.status === 400, r.body);
+
+  r = await sup('POST', '/api/applications', {
+    ...badBase, aadhaar: AADHAAR_A, panchayatId: dhmPanchayats[0].id, zoneId: dhmZones[1].id,
+  });
+  check('a panchayat from another zone is rejected', r.status === 400, r.body);
+
+  r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, zoneId: undefined });
+  check('a missing zone is rejected', r.status === 400, r.body);
 
   r = await sup('POST', '/api/applications', { ...badBase, aadhaar: AADHAAR_A, panchayatId: 9999 });
   check('panchayat outside the chosen block is rejected', r.status === 400, r.body);
@@ -203,6 +245,7 @@ const AADHAAR_B = '999971658847';
   check('autofills father/husband name', r.body.beneficiary.guardianName === 'Bhagaban Sahoo');
   check('autofills phone', r.body.beneficiary.phone === '9876543210');
   check('autofills block', r.body.beneficiary.blockId === blockDhm.id);
+  check('autofills zone', r.body.beneficiary.zoneId === dhmZones[0].id, r.body.beneficiary.zoneId);
   check('autofills panchayat', r.body.beneficiary.panchayatId === dhmPanchayats[0].id);
   check('autofills PIN', r.body.beneficiary.pinCode === '755001');
   check('Aadhaar comes back masked', /^XXXX XXXX \d{4}$/.test(r.body.beneficiary.aadhaarMasked));
@@ -557,7 +600,8 @@ const AADHAAR_B = '999971658847';
   // earlier test has touched, so the arithmetic can be asserted exactly.
   const sup2b = makeClient();
   await sup2b('POST', '/api/auth/login', { username: 'sup.rasul', password: 'Sup@2026#RSD' });
-  const rsdPanchayats = (await sup2b('GET', `/api/master/panchayats?blockId=${blockRsd.id}`)).body.panchayats;
+  const rsdZone = rsdZones[0];
+  const rsdPanchayats = (await sup2b('GET', `/api/master/panchayats?zoneId=${rsdZone.id}`)).body.panchayats;
 
   const RSD_AADHAAR = ['999952981172', '999928967699', '999985285556'];
   // One of each outcome, with a deliberate deduction on the accepted one so the
@@ -579,6 +623,7 @@ const AADHAAR_B = '999971658847';
       aadhaar: item.aadhaar,
       fullName: `RSD Applicant ${item.amount}`,
       blockId: blockRsd.id,
+      zoneId: rsdZone.id,
       panchayatId: item.panchayat.id,
       amount: item.amount,
       acknowledgeDuplicate: true,
@@ -623,8 +668,16 @@ const AADHAAR_B = '999971658847';
     rsd.requested !== rsd.requested + rsd.mlaRejected + rsd.headRejected,
     { requested: rsd.requested, mlaRejected: rsd.mlaRejected });
 
-  const p1 = rsd.panchayats.find((p) => p.panchayatId === rsdPanchayats[0].id);
-  const p2 = rsd.panchayats.find((p) => p.panchayatId === rsdPanchayats[1].id);
+  check('the rollup nests zones under blocks', Array.isArray(rsd.zones) && rsd.zones.length >= 1,
+    rsd.zones && rsd.zones.length);
+  const zoneRow = rsd.zones.find((z) => z.zoneId === rsdZone.id);
+  check('the zone level appears in the rollup', !!zoneRow, rsd.zones.map((z) => z.zoneName));
+  check('the zone total equals the block total (all forms are in one zone)',
+    zoneRow.requested === rsd.requested && zoneRow.sanctioned === rsd.sanctioned,
+    { zone: zoneRow.requested, block: rsd.requested });
+
+  const p1 = zoneRow.panchayats.find((p) => p.panchayatId === rsdPanchayats[0].id);
+  const p2 = zoneRow.panchayats.find((p) => p.panchayatId === rsdPanchayats[1].id);
   check('panchayat 1 requested is 40000', p1 && p1.requested === 40000, p1 && p1.requested);
   check('panchayat 1 sanctioned is 20000', p1 && p1.sanctioned === 20000, p1 && p1.sanctioned);
   check('panchayat 1 awaitingHead is 15000', p1 && p1.awaitingHead === 15000, p1 && p1.awaitingHead);
@@ -634,10 +687,10 @@ const AADHAAR_B = '999971658847';
   check('panchayat 2 sanctioned is 0', p2 && p2.sanctioned === 0, p2 && p2.sanctioned);
   check('panchayat 2 mlaRejected is 40000', p2 && p2.mlaRejected === 40000, p2 && p2.mlaRejected);
 
-  const sumPanchayats = rsd.panchayats.reduce((t, p) => t + p.requested, 0);
+  const sumPanchayats = zoneRow.panchayats.reduce((t, p) => t + p.requested, 0);
   check('panchayat totals add up to the block total', sumPanchayats === rsd.requested,
     { sumPanchayats, block: rsd.requested });
-  const sumSanctioned = rsd.panchayats.reduce((t, p) => t + p.sanctioned, 0);
+  const sumSanctioned = zoneRow.panchayats.reduce((t, p) => t + p.sanctioned, 0);
   check('panchayat sanctioned adds up to the block sanctioned', sumSanctioned === rsd.sanctioned,
     { sumSanctioned, block: rsd.sanctioned });
 
@@ -675,6 +728,146 @@ const AADHAAR_B = '999971658847';
       a.status === 'accepted' ? typeof a.approvedAmount === 'number' : a.approvedAmount === null),
     r.body.applications.map((a) => [a.status, a.approvedAmount]));
 
+  section('Approval list — every accepted application, for every field role');
+
+  // The list is deliberately not scoped by submitter: a Sahayak must be able to
+  // hand over money for a form somebody else filed.
+  r = await sup('GET', '/api/applications/approved');
+  check('a supervisor can read the approval list', r.status === 200, r.body);
+  const approvedForSup = r.body;
+  check('every row on it is accepted',
+    approvedForSup.applications.every((a) => a.approvedAmount !== null), 'approvedAmount null somewhere');
+  check('it carries the zone', approvedForSup.applications.every((a) => !!a.zoneName));
+  check('it reports handover counts',
+    typeof approvedForSup.counts.pendingHandover === 'number' &&
+    typeof approvedForSup.counts.distributed === 'number', approvedForSup.counts);
+  check('it reports sanctioned and distributed totals',
+    typeof approvedForSup.totals.sanctioned === 'number' &&
+    typeof approvedForSup.totals.distributed === 'number', approvedForSup.totals);
+
+  r = await head('GET', '/api/applications/approved');
+  check('the Head Sahayak sees the same list', r.body.total === approvedForSup.total,
+    { head: r.body.total, sup: approvedForSup.total });
+
+  // sup.rasul filed none of the Dharmasala forms, and must still see them here.
+  r = await sup2('GET', '/api/applications/approved');
+  check('another supervisor sees the same approvals', r.body.total === approvedForSup.total,
+    { other: r.body.total, sup: approvedForSup.total });
+  check('and can open one they did not file',
+    (await sup2('GET', `/api/applications/${approvedForSup.applications[0].id}`)).status === 200);
+
+  r = await sup('GET', `/api/applications/approved?blockId=${blockRsd.id}`);
+  check('the block filter narrows the approval list',
+    r.body.applications.every((a) => a.blockName === blockRsd.name), r.body.applications.length);
+  r = await sup('GET', `/api/applications/approved?zoneId=${rsdZone.id}`);
+  check('the zone filter narrows it',
+    r.body.applications.every((a) => a.zoneName === rsdZone.name), r.body.applications.length);
+  r = await sup('GET', `/api/applications/approved?panchayatId=${rsdPanchayats[0].id}`);
+  check('the panchayat filter narrows it',
+    r.body.applications.every((a) => a.panchayatName === rsdPanchayats[0].name),
+    r.body.applications.length);
+  r = await sup('GET', '/api/applications/approved?distributed=no');
+  check('the pending-handover filter works',
+    r.body.applications.every((a) => a.distributedAt === null), 'a distributed row leaked in');
+
+  section('Distribution — recording that the money reached the applicant');
+
+  const target = (await sup('GET', '/api/applications/approved?distributed=no')).body.applications[0];
+  check('there is an approved application to hand over', !!target, 'none pending');
+
+  r = await sup('PATCH', `/api/applications/${target.id}/distribute`, {});
+  check('a handover without a photo is refused', r.status === 400, r.body);
+
+  r = await sup('PATCH', `/api/applications/${target.id}/distribute`, { photoFileId: 999999 });
+  check('a handover with an unknown photo is refused', r.status === 400, r.body);
+
+  // A one-pixel JPEG is enough: the endpoint checks the file's kind and magic
+  // number, not what the picture shows.
+  const JPEG_1PX = Buffer.from(
+    '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+    'HBwcJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAQAAAAAA' +
+    'AAAAAAAAAAAAAAr/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/E' +
+    'ABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJgA/9k=',
+    'base64'
+  );
+
+  async function uploadPhoto(client, kind) {
+    const boundary = `----smoke${Date.now()}`;
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\n${kind}\r\n`),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="shot.jpg"\r\n` +
+        'Content-Type: image/jpeg\r\n\r\n'
+      ),
+      JPEG_1PX,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    return client('POST', '/api/files', body, {
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    });
+  }
+
+  r = await uploadPhoto(sup, 'document');
+  const docFileId = r.status === 201 ? r.body.file.id : null;
+  check('a plain document uploads', r.status === 201, r.body);
+
+  r = await sup('PATCH', `/api/applications/${target.id}/distribute`, { photoFileId: docFileId });
+  check('a handover using a non-distribution file is refused', r.status === 400, r.body);
+
+  r = await uploadPhoto(sup, 'distribution_photo');
+  check('a distribution photo uploads', r.status === 201, r.body);
+  const distPhotoId = r.status === 201 ? r.body.file.id : null;
+
+  r = await mla('PATCH', `/api/applications/${target.id}/distribute`, { photoFileId: distPhotoId });
+  check('the MLA cannot record a handover', r.status === 403, r.body);
+
+  r = await sup('PATCH', `/api/applications/${target.id}/distribute`, { photoFileId: distPhotoId });
+  check('a supervisor can record the handover', r.status === 200, r.body);
+
+  r = await sup('PATCH', `/api/applications/${target.id}/distribute`, { photoFileId: distPhotoId });
+  check('the same application cannot be distributed twice', r.status === 409, r.body);
+
+  r = await sup('GET', `/api/applications/${target.id}`);
+  check('the handover is recorded on the application', !!r.body.application.distributedAt);
+  check('who recorded it is stored', !!r.body.application.distributedByName);
+  check('the photo is linked', r.body.application.distributionPhotoFileId === distPhotoId);
+  check('the application is still accepted, not a new status',
+    r.body.application.status === 'accepted', r.body.application.status);
+
+  // The photo must be readable by the roles that can see the list, including a
+  // supervisor who did not upload it.
+  r = await sup2('GET', `/api/files/${distPhotoId}`, undefined, { raw: true });
+  check('another supervisor can open the distribution photo', r.status === 200, r.status);
+  r = await mla('GET', `/api/files/${distPhotoId}`, undefined, { raw: true });
+  check('the MLA can open the distribution photo', r.status === 200, r.status);
+
+  // Reusing one photo across two handovers would defeat the point.
+  const target2 = (await sup('GET', '/api/applications/approved?distributed=no')).body.applications[0];
+  if (target2) {
+    r = await sup('PATCH', `/api/applications/${target2.id}/distribute`, { photoFileId: distPhotoId });
+    check('a photo cannot be reused for another application', r.status === 400, r.body);
+  }
+
+  r = await head('GET', '/api/applications/approved?distributed=yes');
+  check('the distributed filter finds it',
+    r.body.applications.some((a) => a.id === target.id), r.body.applications.length);
+
+  r = await mla('GET', '/api/applications/summary');
+  check('the rollup counts the handover',
+    r.body.overall.distributedCount >= 1, r.body.overall.distributedCount);
+  check('undistributed = sanctioned - distributed',
+    Math.round((r.body.overall.sanctioned - r.body.overall.distributed) * 100) ===
+      Math.round(r.body.overall.undistributed * 100),
+    { sanctioned: r.body.overall.sanctioned, distributed: r.body.overall.distributed, undistributed: r.body.overall.undistributed });
+
+  // A form that is not accepted cannot be handed over at all.
+  const notAccepted = (await head('GET', '/api/applications?status=pending_head')).body.applications[0];
+  if (notAccepted) {
+    r = await uploadPhoto(sup, 'distribution_photo');
+    r = await sup('PATCH', `/api/applications/${notAccepted.id}/distribute`, { photoFileId: r.body.file.id });
+    check('an unapproved application cannot be distributed', r.status === 409, r.body);
+  }
+
   section('CSV export');
   const csv = await mla('GET', '/api/applications/export.csv', undefined, { raw: true });
   check('CSV downloads', csv.status === 200 && csv.body.includes('Reference No'), csv.status);
@@ -682,6 +875,8 @@ const AADHAAR_B = '999971658847';
   check('CSV does not contain a full Aadhaar number', !csv.body.includes(AADHAAR_A));
   check('CSV has an MLA Comment column', csv.body.includes('MLA Comment'));
   check('CSV has a Head Comment column', csv.body.includes('Head Comment'));
+  check('CSV has a Zone column', csv.body.includes('Zone'));
+  check('CSV reports the handover', csv.body.includes('Distributed At'));
   check('CSV separates requested from sanctioned',
     csv.body.includes('Amount Requested') && csv.body.includes('Amount Sanctioned'));
   check('CSV has a Difference column', csv.body.includes('Difference'));

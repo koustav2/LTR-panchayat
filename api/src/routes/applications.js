@@ -42,6 +42,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
     const guardianName = cleanName(b.guardianName, 'Father / Husband Name');
     const phone = cleanPhone(b.phone);
     const blockId = cleanId(b.blockId, 'Block');
+    const zoneId = cleanId(b.zoneId, 'Zone');
     const panchayatId = cleanId(b.panchayatId, 'Panchayat');
     const pinCode = cleanPin(b.pinCode);
     const supportTypeId = cleanId(b.supportTypeId, 'Type of Support');
@@ -67,17 +68,25 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
       ? b.documentFileIds.map((id) => cleanId(id, 'Document')).slice(0, config.maxDocumentsPerApplication)
       : [];
 
-    // Referential sanity: the dependent dropdowns must actually agree. A
-    // crafted request could otherwise pair a Dharmasala panchayat with the
-    // Rasulpur block, or an Education reason with a Health support type.
+    // Referential sanity: the dependent dropdowns must actually agree, at every
+    // level. A crafted request could otherwise pair a Dharmasala zone with the
+    // Rasulpur block, a panchayat with the wrong zone, or an Education reason
+    // with a Health support type. The chain is checked link by link so the error
+    // names the level that is wrong.
     const block = await queryOne('SELECT id, code, name FROM blocks WHERE id = ? AND is_active = 1', [blockId]);
     if (!block) throw new ApiError(400, 'Please choose a valid Block.');
 
-    const panchayat = await queryOne(
-      'SELECT id FROM panchayats WHERE id = ? AND block_id = ? AND is_active = 1',
-      [panchayatId, blockId]
+    const zone = await queryOne(
+      'SELECT id FROM zones WHERE id = ? AND block_id = ? AND is_active = 1',
+      [zoneId, blockId]
     );
-    if (!panchayat) throw new ApiError(400, 'That Panchayat does not belong to the selected Block.');
+    if (!zone) throw new ApiError(400, 'That Zone does not belong to the selected Block.');
+
+    const panchayat = await queryOne(
+      'SELECT id FROM panchayats WHERE id = ? AND zone_id = ? AND is_active = 1',
+      [panchayatId, zoneId]
+    );
+    if (!panchayat) throw new ApiError(400, 'That Panchayat does not belong to the selected Zone.');
 
     const reason = await queryOne(
       'SELECT id FROM support_reasons WHERE id = ? AND support_type_id = ? AND is_active = 1',
@@ -141,18 +150,18 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
         await conn.execute(
           `UPDATE beneficiaries
               SET full_name = ?, guardian_name = ?, phone = ?, block_id = ?,
-                  panchayat_id = ?, pin_code = ?,
+                  zone_id = ?, panchayat_id = ?, pin_code = ?,
                   photo_file_id = COALESCE(?, photo_file_id)
             WHERE id = ?`,
-          [fullName, guardianName, phone, blockId, panchayatId, pinCode, photoFileId, beneficiaryId]
+          [fullName, guardianName, phone, blockId, zoneId, panchayatId, pinCode, photoFileId, beneficiaryId]
         );
       } else {
         isNewBeneficiary = true;
         const [ins] = await conn.execute(
           `INSERT INTO beneficiaries
              (aadhaar_hash, aadhaar_enc, aadhaar_last4, full_name, guardian_name,
-              phone, block_id, panchayat_id, pin_code, photo_file_id, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              phone, block_id, zone_id, panchayat_id, pin_code, photo_file_id, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             aadhaarHash,
             encryptAadhaar(aadhaar),
@@ -161,6 +170,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
             guardianName,
             phone,
             blockId,
+            zoneId,
             panchayatId,
             pinCode,
             photoFileId,
@@ -178,11 +188,11 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
         `INSERT INTO applications
            (reference_no, beneficiary_id,
             applicant_name, guardian_name, phone,
-            block_id, panchayat_id, pin_code,
+            block_id, zone_id, panchayat_id, pin_code,
             support_type_id, support_reason_id, amount,
             pp_recommend, pp_comment, ms_recommend, ms_comment, mp_recommend, mp_comment,
             status, submitted_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           referenceNo,
           beneficiaryId,
@@ -190,6 +200,7 @@ router.post('/', requireRole('supervisor'), async (req, res, next) => {
           guardianName,
           phone,
           blockId,
+          zoneId,
           panchayatId,
           pinCode,
           supportTypeId,
@@ -280,11 +291,24 @@ function buildListFilters(req) {
     params.push(...OPEN_STATUSES);
   }
 
-  const blockId = Number(req.query.blockId);
-  if (Number.isInteger(blockId) && blockId > 0) {
-    where.push('a.block_id = ?');
-    params.push(blockId);
-  }
+  // Block / Zone / Panchayat, each optional and independent — the client
+  // narrows them in that order, but filtering by panchayat alone is valid too.
+  [
+    ['blockId', 'a.block_id'],
+    ['zoneId', 'a.zone_id'],
+    ['panchayatId', 'a.panchayat_id'],
+  ].forEach(([key, column]) => {
+    const v = Number(req.query[key]);
+    if (Number.isInteger(v) && v > 0) {
+      where.push(`${column} = ?`);
+      params.push(v);
+    }
+  });
+
+  // Handover state, only meaningful on accepted applications.
+  const distributed = String(req.query.distributed || '').toLowerCase();
+  if (distributed === 'yes') where.push('a.distributed_at IS NOT NULL');
+  if (distributed === 'no') where.push('a.distributed_at IS NULL');
 
   const q = String(req.query.q || '').trim();
   if (q) {
@@ -332,13 +356,15 @@ router.get('/', async (req, res, next) => {
               a.head_comment, a.submitted_at, a.reviewed_at, a.head_reviewed_at,
               a.applicant_name, a.guardian_name, a.phone,
               a.amount, a.approved_amount, bn.aadhaar_last4,
-              bl.name AS block_name, p.name AS panchayat_name,
+              a.distributed_at,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name,
               hv.full_name AS head_reviewed_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
@@ -387,9 +413,11 @@ router.get('/', async (req, res, next) => {
         phone: r.phone,
         aadhaarMasked: maskAadhaar(r.aadhaar_last4),
         blockName: r.block_name,
+        zoneName: r.zone_name,
         panchayatName: r.panchayat_name,
         supportType: r.support_type,
         supportReason: r.support_reason,
+        distributedAt: r.distributed_at,
         amount: Number(r.amount),
         // null until the MLA decides — the client shows a dash, never a zero,
         // because "sanctioned nothing yet" and "sanctioned ₹0" are different.
@@ -409,8 +437,8 @@ router.get('/', async (req, res, next) => {
 /**
  * GET /api/applications/summary
  *
- * Money totals grouped by block, then panchayat. Two different quantities are
- * tracked and they must never be conflated:
+ * Money totals grouped by block, then zone, then panchayat. Two different
+ * quantities are tracked and they must never be conflated:
  *
  *   requested  — `amount`, what the supervisor filed for
  *   sanctioned — `approved_amount`, what the MLA actually granted
@@ -431,6 +459,7 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
   try {
     const rows = await query(
       `SELECT a.block_id, bl.name AS block_name, bl.sort_order AS block_order,
+              a.zone_id, z.name AS zone_name, z.sort_order AS zone_order,
               a.panchayat_id, p.name AS panchayat_name, p.sort_order AS panchayat_order,
 
               SUM(CASE WHEN a.status = 'pending_head'  THEN a.amount ELSE 0 END) AS awaiting_head,
@@ -448,13 +477,22 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
               SUM(a.status = 'head_rejected') AS head_rejected_count,
               SUM(a.status = 'rejected')      AS mla_rejected_count,
               SUM(a.status = 'accepted')      AS accepted_count,
+
+              -- Handover, on accepted applications only. Valued at what was
+              -- sanctioned, because that is the money that physically moved.
+              SUM(CASE WHEN a.status = 'accepted' AND a.distributed_at IS NOT NULL
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END)          AS distributed,
+              SUM(a.status = 'accepted' AND a.distributed_at IS NOT NULL)        AS distributed_count,
+
               COUNT(*) AS total_count
          FROM applications a
          JOIN blocks bl    ON bl.id = a.block_id
+         JOIN zones z      ON z.id  = a.zone_id
          JOIN panchayats p ON p.id  = a.panchayat_id
         GROUP BY a.block_id, bl.name, bl.sort_order,
+                 a.zone_id, z.name, z.sort_order,
                  a.panchayat_id, p.name, p.sort_order
-        ORDER BY bl.sort_order, bl.name, p.sort_order, p.name`
+        ORDER BY bl.sort_order, bl.name, z.sort_order, z.name, p.sort_order, p.name`
     );
 
     const blocks = [];
@@ -465,8 +503,10 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
       acceptedRequested: 0, sanctioned: 0,
       headRejected: 0, mlaRejected: 0,
       requested: 0, variance: 0,
+      distributed: 0, undistributed: 0,
       awaitingHeadCount: 0, awaitingMlaCount: 0,
       acceptedCount: 0, headRejectedCount: 0, mlaRejectedCount: 0,
+      distributedCount: 0, undistributedCount: 0,
       openCount: 0, totalCount: 0,
     });
 
@@ -488,9 +528,20 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
       // Positive = the MLA granted more than was asked; negative = deducted.
       t.variance += sanctioned - acceptedRequested;
 
+      const distributed = Number(r.distributed);
+      const distributedCount = Number(r.distributed_count);
+      const acceptedCount = Number(r.accepted_count);
+
+      t.distributed += distributed;
+      t.distributedCount += distributedCount;
+      // What has been sanctioned but not yet handed over. Derived rather than
+      // summed separately, so the two can never disagree.
+      t.undistributed += sanctioned - distributed;
+      t.undistributedCount += acceptedCount - distributedCount;
+
       t.awaitingHeadCount += Number(r.awaiting_head_count);
       t.awaitingMlaCount += Number(r.awaiting_mla_count);
-      t.acceptedCount += Number(r.accepted_count);
+      t.acceptedCount += acceptedCount;
       t.headRejectedCount += Number(r.head_rejected_count);
       t.mlaRejectedCount += Number(r.mla_rejected_count);
       t.openCount += Number(r.awaiting_head_count) + Number(r.awaiting_mla_count);
@@ -499,13 +550,25 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
 
     const overall = zero();
 
+    // One row per (block, zone, panchayat). Rolled up into a three-level tree,
+    // with each level accumulating the same figures so any level can be read on
+    // its own without the reader summing children by hand.
+    const byZone = new Map();
+
     rows.forEach((r) => {
       if (!byBlock.has(r.block_id)) {
-        const b = { blockId: r.block_id, blockName: r.block_name, panchayats: [], ...zero() };
+        const b = { blockId: r.block_id, blockName: r.block_name, zones: [], ...zero() };
         byBlock.set(r.block_id, b);
         blocks.push(b);
       }
       const block = byBlock.get(r.block_id);
+
+      if (!byZone.has(r.zone_id)) {
+        const z = { zoneId: r.zone_id, zoneName: r.zone_name, panchayats: [], ...zero() };
+        byZone.set(r.zone_id, z);
+        block.zones.push(z);
+      }
+      const zone = byZone.get(r.zone_id);
 
       const panchayat = {
         panchayatId: r.panchayat_id,
@@ -513,8 +576,9 @@ router.get('/summary', requireRole(...REVIEWER_ROLES), async (req, res, next) =>
         ...zero(),
       };
       add(panchayat, r);
-      block.panchayats.push(panchayat);
+      zone.panchayats.push(panchayat);
 
+      add(zone, r);
       add(block, r);
       add(overall, r);
     });
@@ -544,9 +608,10 @@ router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next)
       `SELECT a.reference_no, a.status, a.rejection_reason, a.mla_comment,
               a.head_comment, a.submitted_at, a.head_reviewed_at, a.reviewed_at,
               a.applicant_name, a.guardian_name, a.phone, bn.aadhaar_last4, a.pin_code,
-              bl.name AS block_name, p.name AS panchayat_name,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               a.amount, a.approved_amount,
+              a.distributed_at, dv.full_name AS distributed_by_name,
               a.pp_recommend, a.pp_comment, a.ms_recommend, a.ms_comment,
               a.mp_recommend, a.mp_comment,
               u.full_name AS submitted_by_name,
@@ -555,12 +620,14 @@ router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next)
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
          LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          LEFT JOIN users rv      ON rv.id = a.reviewed_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
          ${where}
          ORDER BY a.submitted_at DESC
          LIMIT 10000`,
@@ -569,11 +636,12 @@ router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next)
 
     const headers = [
       'Reference No', 'Stage', 'Submitted At', 'Name', 'Father/Husband Name',
-      'Phone', 'Aadhaar (last 4)', 'PIN', 'Block', 'Panchayat',
+      'Phone', 'Aadhaar (last 4)', 'PIN', 'Block', 'Zone', 'Panchayat',
       'Type of Support', 'Reason of Support',
       'Amount Requested', 'Amount Sanctioned', 'Difference',
       'Head Sahayak', 'Head Verified At', 'Head Comment',
       'MLA', 'MLA Decided At', 'Rejection Reason', 'MLA Comment',
+      'Distributed', 'Distributed At', 'Distributed By',
       'Panchayat Prabhari', 'PP Comment', 'Mandal Sabhapati', 'MS Comment',
       'Mandal Prabhari', 'MP Comment', 'Submitted By',
     ];
@@ -596,10 +664,12 @@ router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next)
       lines.push([
         r.reference_no, STATUS_LABEL[r.status] || r.status, r.submitted_at,
         r.applicant_name, r.guardian_name, r.phone, r.aadhaar_last4, r.pin_code,
-        r.block_name, r.panchayat_name, r.support_type, r.support_reason,
+        r.block_name, r.zone_name, r.panchayat_name, r.support_type, r.support_reason,
         r.amount, sanctioned == null ? '' : sanctioned.toFixed(2), diff,
         r.head_reviewed_by_name, r.head_reviewed_at, r.head_comment,
         r.reviewed_by_name, r.reviewed_at, r.rejection_reason, r.mla_comment,
+        r.status === STATUS.ACCEPTED ? (r.distributed_at ? 'Yes' : 'No') : '',
+        r.distributed_at, r.distributed_by_name,
         r.pp_recommend, r.pp_comment, r.ms_recommend, r.ms_comment,
         r.mp_recommend, r.mp_comment, r.submitted_by_name,
       ].map(esc).join(','));
@@ -610,6 +680,227 @@ router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next)
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="sahayak-applications.csv"');
     res.send(`﻿${lines.join('\r\n')}`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Approval list — every accepted application, for everyone                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/applications/approved
+ *   ?blockId= &zoneId= &panchayatId= &distributed=yes|no &q= &page=
+ *
+ * Deliberately NOT scoped by submitter. Once the MLA has approved an
+ * application the money has to physically reach the applicant, and whichever
+ * Sahayak is in that panchayat that week is the one who can do it — not
+ * necessarily the one who filed the form. So all three roles see the whole
+ * list, filtered by Block / Zone / Panchayat.
+ *
+ * This is the one place a supervisor sees another supervisor's work. It is a
+ * deliberate widening, and it is why `GET /:id` and `GET /files/:id` both carry
+ * a matching exception for accepted applications: a list you can see whose
+ * detail you cannot open would just be broken.
+ *
+ * Undistributed first, because that is the work; within each group, oldest
+ * first, because that is the one that has been waiting longest.
+ */
+router.get('/approved', async (req, res, next) => {
+  try {
+    const where = ["a.status = 'accepted'"];
+    const params = [];
+
+    [
+      ['blockId', 'a.block_id'],
+      ['zoneId', 'a.zone_id'],
+      ['panchayatId', 'a.panchayat_id'],
+    ].forEach(([key, column]) => {
+      const v = Number(req.query[key]);
+      if (Number.isInteger(v) && v > 0) {
+        where.push(`${column} = ?`);
+        params.push(v);
+      }
+    });
+
+    const distributed = String(req.query.distributed || '').toLowerCase();
+    if (distributed === 'yes') where.push('a.distributed_at IS NOT NULL');
+    if (distributed === 'no') where.push('a.distributed_at IS NULL');
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const digits = q.replace(/\D/g, '');
+      const clauses = ['a.reference_no LIKE ?', 'a.applicant_name LIKE ?', 'a.guardian_name LIKE ?'];
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      if (digits.length >= 4) {
+        clauses.push('a.phone LIKE ?');
+        params.push(`%${digits}%`);
+        if (digits.length === 4) {
+          clauses.push('bn.aadhaar_last4 = ?');
+          params.push(digits);
+        }
+      }
+      where.push(`(${clauses.join(' OR ')})`);
+    }
+
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const offset = (page - 1) * PAGE_SIZE;
+
+    const countRow = await queryOne(
+      `SELECT COUNT(*) AS total,
+              SUM(a.distributed_at IS NULL)     AS pending_handover,
+              SUM(a.distributed_at IS NOT NULL) AS done_handover,
+              SUM(COALESCE(a.approved_amount, 0)) AS sanctioned_total,
+              SUM(CASE WHEN a.distributed_at IS NOT NULL
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END) AS distributed_total
+         FROM applications a
+         JOIN beneficiaries bn ON bn.id = a.beneficiary_id
+         ${whereSql}`,
+      params
+    );
+
+    const rows = await query(
+      `SELECT a.id, a.reference_no, a.applicant_name, a.guardian_name, a.phone,
+              a.amount, a.approved_amount, a.reviewed_at,
+              a.distributed_at, a.distribution_photo_file_id,
+              bn.aadhaar_last4,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
+              st.name AS support_type, sr.name AS support_reason,
+              u.full_name AS submitted_by_name,
+              dv.full_name AS distributed_by_name
+         FROM applications a
+         JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
+         JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
+         JOIN panchayats p       ON p.id  = a.panchayat_id
+         JOIN support_types st   ON st.id = a.support_type_id
+         JOIN support_reasons sr ON sr.id = a.support_reason_id
+         JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
+         ${whereSql}
+         ORDER BY (a.distributed_at IS NOT NULL), a.reviewed_at ASC, a.id ASC
+         LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+      params
+    );
+
+    res.json({
+      page,
+      pageSize: PAGE_SIZE,
+      total: Number(countRow.total),
+      counts: {
+        pendingHandover: Number(countRow.pending_handover || 0),
+        distributed: Number(countRow.done_handover || 0),
+      },
+      totals: {
+        sanctioned: Number(countRow.sanctioned_total || 0),
+        distributed: Number(countRow.distributed_total || 0),
+      },
+      applications: rows.map((r) => ({
+        id: r.id,
+        referenceNo: r.reference_no,
+        fullName: r.applicant_name,
+        guardianName: r.guardian_name,
+        phone: r.phone,
+        aadhaarMasked: maskAadhaar(r.aadhaar_last4),
+        blockName: r.block_name,
+        zoneName: r.zone_name,
+        panchayatName: r.panchayat_name,
+        supportType: r.support_type,
+        supportReason: r.support_reason,
+        amount: Number(r.amount),
+        approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
+        reviewedAt: r.reviewed_at,
+        submittedByName: r.submitted_by_name,
+        distributedAt: r.distributed_at,
+        distributedByName: r.distributed_by_name,
+        distributionPhotoFileId: r.distribution_photo_file_id,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Distribution — recording that the money reached the applicant                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * PATCH /api/applications/:id/distribute   { photoFileId }
+ *
+ * Either field role can record a handover: whoever is standing in front of the
+ * applicant. The MLA cannot — they decide, they do not distribute.
+ *
+ * The photo is required and is the whole point of the endpoint. It must be a
+ * file of kind `distribution_photo`, which the client obtains by capturing from
+ * the camera rather than choosing from the gallery. That is a strong deterrent,
+ * not proof: no browser API can prove an image came from a live camera, so this
+ * makes casual reuse of an old photo awkward rather than impossible.
+ *
+ * Recording a handover is one-way, like every other transition here.
+ */
+router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
+
+    const photoFileId = cleanId(req.body.photoFileId, 'Distribution photo');
+
+    const existing = await queryOne(
+      'SELECT id, status, reference_no, distributed_at FROM applications WHERE id = ?',
+      [id]
+    );
+    if (!existing) throw new ApiError(404, 'Application not found.');
+    if (existing.status !== STATUS.ACCEPTED) {
+      throw new ApiError(409, 'Only an application the MLA has accepted can be marked as distributed.');
+    }
+    if (existing.distributed_at) {
+      throw new ApiError(409, 'This application is already marked as distributed.');
+    }
+
+    // The photo must exist, be a distribution photo, and not already be doing
+    // this job for a different application.
+    const photo = await queryOne(
+      'SELECT id, kind FROM files WHERE id = ?',
+      [photoFileId]
+    );
+    if (!photo) throw new ApiError(400, 'That photo was not found. Please take it again.');
+    if (photo.kind !== 'distribution_photo') {
+      throw new ApiError(400, 'That file is not a distribution photo.');
+    }
+    const reused = await queryOne(
+      'SELECT id FROM applications WHERE distribution_photo_file_id = ? LIMIT 1',
+      [photoFileId]
+    );
+    if (reused) throw new ApiError(400, 'That photo has already been used for another application.');
+
+    const result = await query(
+      `UPDATE applications
+          SET distributed_at = NOW(), distributed_by = ?, distribution_photo_file_id = ?
+        WHERE id = ? AND status = ? AND distributed_at IS NULL`,
+      [req.user.id, photoFileId, id, STATUS.ACCEPTED]
+    );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was marked as distributed by someone else a moment ago.');
+    }
+
+    // Attach the photo to the application too, so it shows up alongside the
+    // other files and is covered by the same access checks.
+    await query(
+      'INSERT IGNORE INTO application_files (application_id, file_id) VALUES (?, ?)',
+      [id, photoFileId]
+    );
+
+    await audit(req, {
+      entity: 'application',
+      entityId: id,
+      action: 'distributed',
+      detail: { referenceNo: existing.reference_no, photoFileId },
+    });
+
+    res.json({ ok: true, distributed: true });
   } catch (err) {
     next(err);
   }
@@ -628,26 +919,36 @@ router.get('/:id', async (req, res, next) => {
       // a.* already carries the submitted-time applicant_name/guardian_name/phone,
       // so only Aadhaar and the photo are taken from the beneficiary row.
       `SELECT a.*, bn.aadhaar_last4, bn.aadhaar_enc, bn.photo_file_id,
-              bl.name AS block_name, p.name AS panchayat_name,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name,
               hv.full_name AS head_reviewed_by_name,
-              rv.full_name AS reviewed_by_name
+              rv.full_name AS reviewed_by_name,
+              dv.full_name AS distributed_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
          JOIN panchayats p       ON p.id  = a.panchayat_id
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
          LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          LEFT JOIN users rv      ON rv.id = a.reviewed_by
+         LEFT JOIN users dv      ON dv.id = a.distributed_by
         WHERE a.id = ?`,
       [id]
     );
 
     if (!row) throw new ApiError(404, 'Application not found.');
-    if (req.user.role === 'supervisor' && row.submitted_by !== req.user.id) {
+    // A supervisor sees their own submissions, plus every accepted application —
+    // the approval list shows them all of those, and they may be the one
+    // recording the handover.
+    if (
+      req.user.role === 'supervisor' &&
+      row.submitted_by !== req.user.id &&
+      row.status !== STATUS.ACCEPTED
+    ) {
       throw new ApiError(403, 'You can only view your own submissions.');
     }
 
@@ -691,12 +992,18 @@ router.get('/:id', async (req, res, next) => {
         aadhaarMasked: maskAadhaar(row.aadhaar_last4),
         aadhaarFull,
         blockName: row.block_name,
+        zoneName: row.zone_name,
         panchayatName: row.panchayat_name,
         pinCode: row.pin_code,
         supportType: row.support_type,
         supportReason: row.support_reason,
         amount: Number(row.amount),
         approvedAmount: row.approved_amount == null ? null : Number(row.approved_amount),
+
+        distributedAt: row.distributed_at,
+        distributedByName: row.distributed_by_name,
+        distributionPhotoFileId: row.distribution_photo_file_id,
+
         ppRecommend: row.pp_recommend,
         ppComment: row.pp_comment,
         msRecommend: row.ms_recommend,

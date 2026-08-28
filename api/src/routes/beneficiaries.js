@@ -35,11 +35,13 @@ router.get('/lookup', requireRole('supervisor'), lookupLimiter, async (req, res,
     const hash = hashAadhaar(aadhaar);
 
     const row = await queryOne(
-      `SELECT b.id, b.full_name, b.guardian_name, b.phone, b.block_id, b.panchayat_id,
+      `SELECT b.id, b.full_name, b.guardian_name, b.phone,
+              b.block_id, b.zone_id, b.panchayat_id,
               b.pin_code, b.aadhaar_last4, b.photo_file_id,
-              bl.name AS block_name, p.name AS panchayat_name
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name
          FROM beneficiaries b
          JOIN blocks bl     ON bl.id = b.block_id
+         JOIN zones z       ON z.id  = b.zone_id
          JOIN panchayats p  ON p.id  = b.panchayat_id
         WHERE b.aadhaar_hash = ?`,
       [hash]
@@ -68,6 +70,8 @@ router.get('/lookup', requireRole('supervisor'), lookupLimiter, async (req, res,
         phone: row.phone,
         blockId: row.block_id,
         blockName: row.block_name,
+        zoneId: row.zone_id,
+        zoneName: row.zone_name,
         panchayatId: row.panchayat_id,
         panchayatName: row.panchayat_name,
         pinCode: row.pin_code,

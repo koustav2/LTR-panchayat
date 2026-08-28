@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { MY_QUEUE, DeskHead, formatDate } from '../components/ui';
+import { MY_QUEUE, DeskHead, formatDate, formatMoney } from '../components/ui';
 import AmountSummary from '../components/AmountSummary';
 
 /**
@@ -25,6 +25,7 @@ export default function Dashboard() {
   const { user, serverDate } = useAuth();
   const navigate = useNavigate();
   const [counts, setCounts] = useState(null);
+  const [handover, setHandover] = useState(null);
 
   const isSupervisor = user.role === 'supervisor';
   const isHead = user.role === 'head_sahayak';
@@ -42,6 +43,20 @@ export default function Dashboard() {
       alive = false;
     };
   }, []);
+
+  // The handover queue. Only the two field roles can act on it, so only they
+  // are asked to fetch it.
+  useEffect(() => {
+    if (isMla) return undefined;
+    let alive = true;
+    api
+      .approved({ distributed: 'no', page: 1 })
+      .then((d) => alive && setHandover({ counts: d.counts, totals: d.totals }))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [isMla]);
 
   return (
     <>
@@ -79,6 +94,23 @@ export default function Dashboard() {
             </span>
           </span>
         </button>
+
+        {/* The handover queue, for whoever is in the field. */}
+        {!isMla && (
+          <button className="tile" onClick={() => navigate('/approvals')}>
+            <span className="tile-icon" aria-hidden="true">✅</span>
+            <span>
+              <span className="tile-title">Approval List</span>
+              <span className="tile-desc">
+                {handover && handover.counts.pendingHandover > 0
+                  ? `${handover.counts.pendingHandover} approved ${
+                      handover.counts.pendingHandover === 1 ? 'application' : 'applications'
+                    } waiting to be handed over`
+                  : 'Approved applications — record what has been distributed'}
+              </span>
+            </span>
+          </button>
+        )}
       </div>
 
       {counts && (
@@ -105,8 +137,39 @@ export default function Dashboard() {
         </button>
       )}
 
-      {/* Money rolled up by block and panchayat. Both reviewer roles see it —
-          the endpoint is role-gated on the server too, not just hidden here. */}
+      {/* Handover progress, for the roles that can do something about it. */}
+      {!isMla && handover && (
+        <div className="card handover-card">
+          <div className="summary-head">
+            <h3>Handover</h3>
+            <span className="summary-note">
+              Counted only once the MLA has accepted and set the sanctioned amount.
+            </span>
+          </div>
+          <div className="summary-tiles two">
+            <div className="stat wait">
+              <div className="l">Waiting to hand over</div>
+              <div className="n">{handover.counts.pendingHandover}</div>
+              <div className="c">
+                {formatMoney(handover.totals.sanctioned - handover.totals.distributed)} sanctioned
+              </div>
+            </div>
+            <div className="stat handed">
+              <div className="l">Distributed</div>
+              <div className="n">{handover.counts.distributed}</div>
+              <div className="c">{formatMoney(handover.totals.distributed)} handed over</div>
+            </div>
+          </div>
+          <div className="summary-foot">
+            <button className="btn btn-primary btn-block" onClick={() => navigate('/approvals')}>
+              Open the Approval List
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Money rolled up by block, zone and panchayat. Both reviewer roles see
+          it — the endpoint is role-gated on the server too, not just hidden. */}
       {(isHead || isMla) && <AmountSummary />}
     </>
   );

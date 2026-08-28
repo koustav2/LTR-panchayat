@@ -189,10 +189,16 @@ export default function FormList() {
                   )}
                 </div>
                 <div className="row-meta">
-                  {a.panchayatName}, {a.blockName} · {formatDate(a.submittedAt)}
+                  {a.panchayatName} · {a.zoneName} · {a.blockName}
                 </div>
+                <div className="row-meta">{formatDate(a.submittedAt)}</div>
                 {isReviewer && (
                   <div className="row-meta">Submitted by {a.submittedByName}</div>
+                )}
+                {a.status === 'accepted' && a.distributedAt && (
+                  <div className="row-done">
+                    Distributed {formatDate(a.distributedAt)}
+                  </div>
                 )}
                 {a.status === 'head_rejected' && a.headComment && (
                   <div className="row-reject">
@@ -221,6 +227,7 @@ export default function FormList() {
                   <th className="right">Requested</th>
                   <th className="right">Sanctioned</th>
                   <th>Panchayat</th>
+                  <th>Zone</th>
                   {isReviewer && <th>Submitted by</th>}
                   <th>Submitted</th>
                   <th>Status</th>
@@ -269,8 +276,9 @@ export default function FormList() {
                         </>
                       )}
                     </td>
+                    <td>{a.panchayatName}</td>
                     <td>
-                      <div>{a.panchayatName}</div>
+                      <div>{a.zoneName}</div>
                       <div className="c-sub">{a.blockName}</div>
                     </td>
                     {isReviewer && <td>{a.submittedByName}</td>}

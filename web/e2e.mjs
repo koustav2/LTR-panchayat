@@ -87,9 +87,13 @@ const sup = await session('supervisor');
   await shot(page, '02-dashboard-supervisor.png');
 
   const tiles = await page.locator('.tile').count();
-  check('supervisor sees both dashboard tiles', tiles === 2, `${tiles} tiles`);
+  check('supervisor sees all three dashboard tiles', tiles === 3, `${tiles} tiles`);
   check('"Sahayak Form" tile is present', await page.getByText('Sahayak Form', { exact: true }).first().isVisible());
   check('"List of Form Uploaded" tile is present', await page.getByText('List of Form Uploaded').first().isVisible());
+  // Scoped to .tiles: the sidebar carries the same words and is display:none at
+  // this width, so an unscoped match resolves to the hidden one.
+  check('"Approval List" tile is present',
+    await page.locator('.tiles').getByText('Approval List').isVisible());
 
   // No horizontal scrolling on a 390px screen.
   const overflow = await page.evaluate(
@@ -107,8 +111,10 @@ const sup = await session('supervisor');
   const inputMode = await page.locator('[data-field="aadhaar"]').getAttribute('inputmode');
   check('Aadhaar field asks for the numeric keypad', inputMode === 'numeric', inputMode);
 
-  // Panchayat must stay locked until a block is chosen.
-  check('Panchayat is disabled before a block is picked',
+  // Block -> Zone -> Panchayat: each level stays locked until its parent is set.
+  check('Zone is disabled before a block is picked',
+    await page.locator('[data-field="zoneId"]').isDisabled());
+  check('Panchayat is disabled before a zone is picked',
     await page.locator('[data-field="panchayatId"]').isDisabled());
   check('Reason of Support is disabled before a type is picked',
     await page.locator('[data-field="supportReasonId"]').isDisabled());
@@ -126,11 +132,41 @@ const sup = await session('supervisor');
 
   await page.locator('[data-field="blockId"]').selectOption({ label: 'Dharmasala' });
   await page.waitForTimeout(150);
-  check('Panchayat unlocks once a block is chosen',
+  check('Zone unlocks once a block is chosen',
+    !(await page.locator('[data-field="zoneId"]').isDisabled()));
+  check('Panchayat is still locked until a zone is chosen',
+    await page.locator('[data-field="panchayatId"]').isDisabled());
+
+  const zoneOptions = await page.locator('[data-field="zoneId"] option').allTextContents();
+  check('Zone list is filtered to that block',
+    zoneOptions.length === 4 && zoneOptions.includes('Dharmasala Zone 1') &&
+    !zoneOptions.some((z) => z.startsWith('Rasulpur')),
+    zoneOptions.join('|'));
+
+  await page.locator('[data-field="zoneId"]').selectOption({ label: 'Dharmasala Zone 2' });
+  await page.waitForTimeout(150);
+  check('Panchayat unlocks once a zone is chosen',
     !(await page.locator('[data-field="panchayatId"]').isDisabled()));
 
-  const panchayatOptions = await page.locator('[data-field="panchayatId"] option').count();
-  check('Panchayat list is filtered to that block', panchayatOptions === 13, `${panchayatOptions} options incl. placeholder`);
+  const panchayatOptions = await page.locator('[data-field="panchayatId"] option').allTextContents();
+  check('Panchayat list is filtered to that zone — ten plus the placeholder',
+    panchayatOptions.length === 11, `${panchayatOptions.length} options`);
+  check('Zone 2 holds panchayats 11-20, not 1-10',
+    panchayatOptions.includes('Dharmasala Panchayat 11') &&
+    !panchayatOptions.includes('Dharmasala Panchayat 1'),
+    panchayatOptions.slice(1, 3).join('|'));
+
+  // Changing the block must clear BOTH levels below it, not just the next one.
+  await page.locator('[data-field="blockId"]').selectOption({ label: 'Rasulpur' });
+  await page.waitForTimeout(150);
+  check('changing block clears the zone',
+    (await page.locator('[data-field="zoneId"]').inputValue()) === '');
+  check('changing block re-locks the panchayat',
+    await page.locator('[data-field="panchayatId"]').isDisabled());
+  await page.locator('[data-field="blockId"]').selectOption({ label: 'Dharmasala' });
+  await page.waitForTimeout(150);
+  await page.locator('[data-field="zoneId"]').selectOption({ label: 'Dharmasala Zone 2' });
+  await page.waitForTimeout(150);
   await page.locator('[data-field="panchayatId"]').selectOption({ index: 1 });
 
   await page.locator('[data-field="supportTypeId"]').selectOption({ label: 'Education' });
@@ -182,8 +218,11 @@ const sup = await session('supervisor');
   check('autofilled PIN', await page.locator('[data-field="pinCode"]').inputValue() === '755001');
   check('autofilled block',
     await page.locator('[data-field="blockId"] option:checked').textContent() === 'Dharmasala');
+  check('autofilled zone',
+    ((await page.locator('[data-field="zoneId"] option:checked').textContent()) || '') === 'Dharmasala Zone 2');
   check('autofilled panchayat',
-    ((await page.locator('[data-field="panchayatId"] option:checked').textContent()) || '').startsWith('Panchayat'));
+    ((await page.locator('[data-field="panchayatId"] option:checked').textContent()) || '')
+      .startsWith('Dharmasala Panchayat'));
   check('autofilled fields are locked until "Edit" is pressed',
     await page.locator('[data-field="fullName"]').getAttribute('readonly') !== null);
   check('previous application count is shown',
@@ -247,7 +286,11 @@ const headS = await session('head');
   await shot(page, '10a-dashboard-head.png');
 
   const tiles = await page.locator('.tile').count();
-  check('Head Sahayak sees only the list tile (no form entry)', tiles === 1, `${tiles} tiles`);
+  // The list and the approval list, but no form entry — the head verifies and
+  // hands over; they do not file.
+  check('Head Sahayak sees the list and approval tiles, but no form entry',
+    tiles === 2 && !(await page.getByText('Sahayak Form', { exact: true }).first().isVisible().catch(() => false)),
+    `${tiles} tiles`);
   check('Head Sahayak sees a queue of 2 waiting on them',
     (await page.locator('.count.wait .n').textContent()) === '2');
   check('the ringed tile is the head’s own queue',
@@ -302,7 +345,9 @@ const mla = await session('mla');
   await shot(page, '10-dashboard-mla.png');
 
   const tiles = await page.locator('.tile').count();
-  check('MLA sees only the list tile (no form entry)', tiles === 1, `${tiles} tiles`);
+  // The MLA decides; they neither file nor hand over, so exactly one tile.
+  check('MLA sees only the list tile — no form entry, no approval list',
+    tiles === 1, `${tiles} tiles`);
   check('MLA sees one form waiting on them',
     (await page.locator('.count.sent .n').textContent()) === '1');
   check('MLA sees the other still in verification',

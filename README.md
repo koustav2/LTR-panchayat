@@ -8,9 +8,9 @@ user-management screen:
 
 | Role | What they do |
 |---|---|
-| **Supervisor** | Fills the Sahayak Form; sees their own submissions and where each has reached |
-| **Head Sahayak** | Verifies every new form and either sends it to the MLA or rejects it, with a comment either way; sees all forms and the money rollup |
-| **MLA** | Decides the forms the Head Sahayak has forwarded; sets the amount actually sanctioned; exports CSV |
+| **Supervisor** | Fills the Sahayak Form; sees their own submissions and where each has reached; records handovers from the Approval List |
+| **Head Sahayak** | Verifies every new form and either sends it to the MLA or rejects it, with a comment either way; sees all forms, the money rollup and the Approval List |
+| **MLA** | Decides the forms the Head Sahayak has forwarded; sets the amount actually sanctioned; exports CSV. Does not distribute |
 
 An application moves in one direction only:
 
@@ -33,8 +33,14 @@ A form the Head Sahayak rejects still appears in the MLA's list — marked
 "Rejected by Head Sahayak" with the head's comment — but the MLA cannot act on
 it. That rejection is final.
 
+Once the MLA accepts, the money still has to reach the applicant. Both field
+roles get an **Approval List** — every accepted application, filtered by Block /
+Zone / Panchayat — and record the handover with a photo taken at that moment.
+Distribution is tracked separately from the decision: an accepted application is
+either awaiting handover or distributed, and stays accepted either way.
+
 **Stack:** React 18 + Vite · Node 20 + Express · MySQL 8 · Docker Compose
-**Bundle:** 67 KB gzipped · **Tests:** 155 API + 71 journey + 47 responsive + 58 attachment/amount checks, all passing
+**Bundle:** 71 KB gzipped · **Tests:** 201 API + 80 journey + 53 responsive + 64 attachment/amount + 46 approval/camera checks, all passing
 
 ---
 
@@ -68,6 +74,45 @@ cd api && npm run hash-password -- "YourNewStrongPassword"
 docker compose exec db mysql -u root -p lrt_panchayat \
   -e "UPDATE users SET password_hash='<paste>' WHERE username='mla';"
 ```
+
+### Upgrading a live deployment to zones and handover
+
+Zones are a NOT NULL column on three tables, and there is no way to infer which
+zone an existing application belonged to — the zone did not exist when it was
+filed. So the application data is cleared first. Run in exactly this order:
+
+```bash
+cd /opt/sahayak
+./scripts/backup.sh                                   # irreversible from here on
+git pull
+
+PW=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+M() { docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat < "$1"; }
+
+M db/scripts/wipe-applications.sql        # applications, beneficiaries, files, counters
+M db/migrations/004_zones_and_distribution.sql
+M db/scripts/reset-address-lists.sql      # drops the old flat panchayat list
+M db/init/002_seed_master.sql             # 2 blocks / 6 zones / 60 panchayats
+
+docker compose exec api sh -c 'rm -f /data/uploads/*'   # the files themselves
+docker compose up -d --build
+docker compose logs -f api
+```
+
+The wipe runs *before* the migration on purpose and works on either schema. The
+address-list reset runs *after*, because the old panchayat rows have no zone they
+can honestly belong to and are replaced rather than backfilled. Every step is
+safe to run more than once.
+
+Verify:
+
+```bash
+docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat -e "
+  SELECT (SELECT COUNT(*) FROM zones) zones, (SELECT COUNT(*) FROM panchayats) panchayats,
+         (SELECT COUNT(*) FROM applications) apps, (SELECT COUNT(*) FROM users) users;"
+```
+
+Expect 6 zones, 60 panchayats, 0 applications, 4 users.
 
 ### Upgrading an existing deployment to the three-stage flow
 
@@ -141,8 +186,12 @@ cd api && BASE=http://localhost:4000 npm run smoke
 # Forces the gap-lock deadlock and proves the transaction retry absorbs it.
 cd api && BASE=http://localhost:4000 npm run stress
 
-# Browser — 50 checks on a 390px viewport, screenshots into web/screens/
+# Browser — the three-stage journey on a 390px viewport, screenshots into web/screens/
 cd web && npm install playwright && node e2e.mjs
+
+# Approval list and the real camera capture. Chromium's fake media device drives
+# getUserMedia, so the live capture path runs rather than being mocked.
+cd web && node approvals.mjs
 
 # Responsive — 37 checks at 390px, 768px and 1440px, both roles.
 # Run e2e first: this one needs applications to exist.
@@ -154,6 +203,78 @@ installed, and the app served at `BASE` (default `http://localhost:4000`).
 
 ---
 
+## The address hierarchy
+
+Three levels, each a dependent dropdown: pick a **Block**, its **Zones** load;
+pick a Zone, its **Panchayats** load. Changing a parent clears every level below
+it, and every level is re-validated server-side on submission — a crafted
+request cannot pair a zone with the wrong block or a panchayat with the wrong
+zone.
+
+Seeded as 2 blocks × 3 zones × 10 panchayats = 60 panchayats. Panchayat
+numbering runs continuously across each block (Zone 1 → 1–10, Zone 2 → 11–20,
+Zone 3 → 21–30) so no two panchayats in a block share a name and the MLA's
+rollup never shows three identical rows. The whole tree comes down in one
+`bootstrap` call and is filtered in the browser, so changing Block costs no
+request.
+
+`applications.zone_id` is snapshotted at submission alongside block and
+panchayat, for the same reason the applicant's name is: a form decided last
+month should still read the way it was filed.
+
+---
+
+## Handover — getting the money to the applicant
+
+`GET /api/applications/approved` is the Approval List: every accepted
+application, deliberately **not** scoped by who filed it. Whichever Sahayak is
+in that panchayat this week is the one who can hand money over, not necessarily
+the one who took the form. That is the single place a supervisor sees another
+supervisor's work, and it is why `GET /:id` and `GET /files/:id` both carry a
+matching exception for accepted applications — a list you can see whose detail
+you cannot open is just broken.
+
+`PATCH /api/applications/:id/distribute` records it. The photo is required, is
+stored with the application, and cannot be reused for a second handover.
+
+### On "camera, not gallery"
+
+`<input capture="environment">` is only a *hint*: iOS Safari honours it, several
+Android OEM browsers still show a Camera/Gallery/Files chooser, and every
+desktop browser ignores it. So the primary path is `getUserMedia` — a live
+stream with the frame grabbed off a canvas, where no file picker exists anywhere
+in the flow. Two honest limits:
+
+- It needs a **secure context**. Works on `https://` and `localhost`,
+  unavailable over plain `http://` — which is why the hinted file input survives
+  as a fallback, and why the app must be served over TLS.
+- It proves the bytes came from a camera *device*, not that the scene in front of
+  it is real. A virtual camera can feed it a saved image. This raises faking a
+  handover from "pick a file" to "install software" — a deterrent, not proof.
+
+Distribution is **not** a sixth status. It is a separate axis from the MLA's
+decision, and folding it into `status` would take distributed money out of the
+`accepted` totals reported upward.
+
+---
+
+## Clearing the application data
+
+`db/scripts/wipe-applications.sql` deletes every application, beneficiary and
+file record and resets the reference counters, keeping the four user accounts.
+It does **not** remove the files on disk — the database has no reach into the
+filesystem — so clear those separately, after it succeeds:
+
+```bash
+docker compose exec api sh -c 'rm -f /data/uploads/*'
+```
+
+`db/scripts/reset-address-lists.sql` is separate and rarer: it drops every zone
+and panchayat so `002_seed_master.sql` can rewrite them from scratch. It refuses
+to run while any application or beneficiary still references them.
+
+---
+
 ## Changing the lists (panchayats, support reasons)
 
 All master data lives in the database. Nothing is hardcoded, so no redeploy is
@@ -161,10 +282,17 @@ needed:
 
 ```sql
 -- rename a placeholder
-UPDATE panchayats SET name = 'Bhagabanpur' WHERE block_id = 1 AND name = 'Panchayat 1';
+UPDATE panchayats SET name = 'Bhagabanpur' WHERE id = 1;
 
--- add one
-INSERT INTO panchayats (block_id, name, sort_order) VALUES (1, 'New Panchayat', 13);
+-- rename a zone
+UPDATE zones SET name = 'Dharmasala North' WHERE id = 1;
+
+-- add a panchayat — both columns, kept consistent
+INSERT INTO panchayats (block_id, zone_id, name, sort_order)
+VALUES (1, 1, 'New Panchayat', 31);
+
+-- move one between zones — both columns together
+UPDATE panchayats SET zone_id = 2, block_id = 1 WHERE id = 5;
 
 -- retire one — never DELETE, existing applications reference it
 UPDATE panchayats SET is_active = 0 WHERE id = 7;
@@ -344,7 +472,8 @@ api/
   scripts/smoke-test.js  155 API checks
   scripts/stress-concurrency.mjs  Deliberate deadlock, to exercise the retry
 web/
-  src/pages/             Login, Dashboard, SahayakForm, FormList, FormDetail
+  src/pages/             Login, Dashboard, SahayakForm, FormList, FormDetail, ApprovalList
+  src/components/CameraCapture.jsx   getUserMedia capture, no gallery path
   e2e.mjs                50 browser checks on a phone viewport
 scripts/backup.sh        Nightly dump + uploads tarball, 14-day retention
 docs/PLAN.md             Requirements, data model and traceability matrix

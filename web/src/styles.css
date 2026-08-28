@@ -860,3 +860,150 @@ table.data .c-delta.down { color: var(--amber-700); }
   line-height: 1.4;
   max-width: 100%;
 }
+
+/* ================================================== zones, handover, camera */
+
+/* Three-level rollup. Indentation is the only thing distinguishing a zone row
+   from a panchayat row, so it has to be unambiguous at 13px on a phone. */
+.summary-table .zone-row td { background: #fbfcfd; }
+.summary-table .zone-row:hover td { background: var(--green-50); }
+.summary-table .zone-row .indent { padding-left: 30px; font-weight: 600; }
+.summary-table .indent-2 { padding-left: 58px; }
+.summary-table { min-width: 820px; }
+
+.summary-tiles.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 900px) { .summary-tiles.two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.summary-foot { padding: 0 14px 14px; }
+
+/* Handover badges. Green once done; amber while it is still work. */
+.badge.distributed  { background: var(--green-50); color: var(--green-800); border: 1px solid var(--green-100); }
+.badge.to-hand-over { background: var(--amber-50); color: var(--amber-700); border: 1px solid var(--amber-200); }
+
+.row-done {
+  margin-top: 9px; padding: 8px 11px; border-radius: 8px;
+  background: var(--green-50); border: 1px solid var(--green-100);
+  color: var(--green-800); font-size: 13px; font-weight: 600;
+}
+
+.counts-3 { grid-template-columns: repeat(3, 1fr); }
+/* The third tile holds a money figure, not a count, so it needs room to breathe
+   at phone widths rather than shrinking the digits. */
+@media (max-width: 520px) {
+  .counts-3 { grid-template-columns: repeat(2, 1fr); }
+  .counts-3 > :last-child { grid-column: 1 / -1; }
+  .counts-3 > :last-child .n { font-size: 18px; }
+}
+
+/* Block / Zone / Panchayat filter row on the approval list. Stacks on a phone —
+   three selects side by side at 390px are unusable. */
+.filter-row { display: grid; gap: 10px; margin-bottom: 14px; }
+@media (min-width: 640px) { .filter-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.filter-row label { display: block; }
+.filter-row span {
+  display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--slate-500); margin-bottom: 4px;
+}
+.filter-row select {
+  width: 100%; font: inherit; font-size: 16px;  /* 16px stops iOS zooming on focus */
+  min-height: 46px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--slate-300); background: #fff; color: inherit;
+}
+.filter-row select:disabled { background: var(--slate-50); color: var(--slate-400); }
+
+.pager {
+  display: flex; gap: 10px; align-items: center; justify-content: center;
+  margin-top: 18px; font-size: 14px; color: var(--slate-500);
+}
+
+/* ------------------------------------------------------------ the handover */
+
+.handover-done { display: grid; gap: 12px; }
+@media (min-width: 520px) { .handover-done { grid-template-columns: 1fr auto; align-items: start; } }
+.handover-done .hd-meta { display: grid; gap: 10px; }
+.handover-done .k {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-500);
+}
+.handover-done .v { font-size: 15px; font-weight: 600; }
+
+.handover-shot {
+  display: flex; gap: 12px; align-items: center;
+  border: 1px solid var(--green-100); background: var(--green-50);
+  border-radius: 12px; padding: 12px; margin-bottom: 14px;
+}
+.handover-shot img {
+  width: 92px; height: 112px; flex: none; object-fit: cover;
+  border-radius: 8px; border: 1px solid var(--green-100);
+}
+.handover-shot .ok { font-weight: 700; color: var(--green-800); margin-bottom: 2px; }
+
+.modal-note { font-size: 12.5px; color: var(--slate-500); line-height: 1.45; margin: 4px 0 0; }
+
+/* ---------------------------------------------------------------- camera */
+
+.camera { display: grid; gap: 10px; }
+
+/* A fixed aspect box, so the modal does not jump height when the stream starts
+   and again when the still replaces it. */
+.camera-stage {
+  position: relative; width: 100%; aspect-ratio: 3 / 4;
+  max-height: 52vh; background: #0f172a; border-radius: 12px; overflow: hidden;
+}
+.camera-stage video,
+.camera-stage img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.camera-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.camera-actions.single { grid-template-columns: 1fr; }
+.camera-actions .btn { width: 100%; }
+
+.camera-wait {
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  padding: 22px; color: var(--slate-500); font-size: 14px;
+}
+.camera-fallback { display: grid; gap: 10px; text-align: center; }
+.camera-fallback p { font-size: 13.5px; color: var(--amber-700); margin: 0; }
+.camera-msg { font-size: 13px; color: var(--red-700); }
+
+/* ============================================== mobile browser hardening */
+
+/* Long placeholder names ("Dharmasala Panchayat 27") in a narrow select would
+   otherwise force the whole form wider than the viewport. */
+.field select { max-width: 100%; text-overflow: ellipsis; }
+
+/* Nothing may scroll the page sideways. Wide content scrolls inside its own
+   container instead — tables already do, and this catches the rest. */
+html, body { overflow-x: hidden; max-width: 100%; }
+.content { min-width: 0; }
+.table-wrap, .table-scroll { -webkit-overflow-scrolling: touch; }
+
+/* iOS: honour the notch and the home indicator rather than tucking the pinned
+   action bar underneath them. */
+.actionbar { padding-bottom: calc(10px + var(--safe-bottom)); }
+
+/* A modal has to survive a short landscape viewport with the keyboard up. */
+.modal { max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+/* Tap targets. 44px is the floor anything interactive should meet on a phone. */
+@media (max-width: 1023px) {
+  .chip { min-height: 44px; }
+  .count { min-height: 68px; }
+  .row { padding: 15px 14px; }
+}
+
+/* Very narrow phones — 360px and below still exist in the field. */
+@media (max-width: 380px) {
+  .content { padding-left: 12px; padding-right: 12px; }
+  .row-money { gap: 6px 14px; }
+  .summary-tiles { grid-template-columns: 1fr; }
+  .camera-actions { grid-template-columns: 1fr; }
+}
+
+/* The handover figure. Related to Sanctioned but not the same number, so it
+   gets its own tone rather than reusing the sanctioned green outright. */
+.summary-tiles .handed    { background: var(--green-50); border-color: var(--green-600); }
+.summary-tiles .handed .n { color: var(--green-700); }
+.summary-table .handed    { color: var(--green-700); font-weight: 650; }
+
+/* The dashboard handover panel. Shares the summary card's internals — heading
+   strip, stat tiles — without sharing its class, so a selector can tell the two
+   apart. */
+.handover-card { margin-top: 18px; overflow: hidden; }

@@ -6,6 +6,7 @@ import {
   DeskHead, StatusBadge, Banner, Modal, Field,
   formatDate, formatMoney, stageLabel,
 } from '../components/ui';
+import CameraCapture from '../components/CameraCapture';
 
 function Row({ k, v, full }) {
   return (
@@ -106,6 +107,10 @@ export default function FormDetail() {
   const [headRejecting, setHeadRejecting] = useState(false);
   const [headComment, setHeadComment] = useState('');
 
+  // Distribution
+  const [handingOver, setHandingOver] = useState(false);
+  const [distPhoto, setDistPhoto] = useState(null);
+
   const load = useCallback(
     async (reveal = false) => {
       try {
@@ -128,6 +133,7 @@ export default function FormDetail() {
     setAccepting(false);
     setForwarding(false);
     setHeadRejecting(false);
+    setHandingOver(false);
   };
 
   async function decide(status, rejectionReason) {
@@ -172,6 +178,23 @@ export default function FormDetail() {
     }
   }
 
+  async function recordDistribution() {
+    if (!distPhoto) return;
+    setBusy(true);
+    try {
+      await api.distribute(id, distPhoto.id);
+      closeAll();
+      setDistPhoto(null);
+      setNotice('Recorded as distributed to the applicant.');
+      await load(revealed);
+    } catch (err) {
+      setError(err.message);
+      closeAll();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // The sanctioned amount the MLA is about to set, parsed the same way the
   // server parses it, so the preview below the field can never disagree with
   // what gets saved.
@@ -188,8 +211,13 @@ export default function FormDetail() {
   const isHead = user.role === 'head_sahayak';
   const isMla = user.role === 'mla';
 
+  const isSupervisor = user.role === 'supervisor';
   const canVerify = isHead && app.status === 'pending_head';
   const canDecide = isMla && app.status === 'pending_mla';
+  // Either field role can record the handover — whoever is standing in front of
+  // the applicant. The MLA decides; they do not distribute.
+  const canDistribute =
+    (isSupervisor || isHead) && app.status === 'accepted' && !app.distributedAt;
   // The MLA can see a form still in verification, and one the head turned down,
   // but can act on neither. Saying so beats an unexplained missing button.
   const mlaBlocked = isMla && (app.status === 'pending_head' || app.status === 'head_rejected');
@@ -259,6 +287,41 @@ export default function FormDetail() {
                 <strong>MLA comment:</strong> {app.mlaComment}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Proof the money actually reached the applicant. Shown to everyone
+            once recorded — it is the end of the story for this application. */}
+        {app.distributedAt && (
+          <div className="detail-group">
+            <h3>Distributed to Applicant</h3>
+            <div className="handover-done">
+              <div className="hd-meta">
+                <div>
+                  <div className="k">Handed over on</div>
+                  <div className="v">{formatDate(app.distributedAt, true)}</div>
+                </div>
+                <div>
+                  <div className="k">Recorded by</div>
+                  <div className="v">{app.distributedByName || '—'}</div>
+                </div>
+              </div>
+              {app.distributionPhotoFileId && (
+                <a
+                  className="photo-tile"
+                  href={api.fileUrl(app.distributionPhotoFileId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open full size"
+                >
+                  <img
+                    src={api.fileUrl(app.distributionPhotoFileId)}
+                    alt={`Distribution photo for ${app.fullName}`}
+                  />
+                  <div className="cap">Distribution photo</div>
+                </a>
+              )}
+            </div>
           </div>
         )}
 
@@ -338,6 +401,7 @@ export default function FormDetail() {
               </div>
             </div>
             <Row k="Block" v={app.blockName} />
+            <Row k="Zone" v={app.zoneName} />
             <Row k="Panchayat" v={app.panchayatName} />
             <Row k="PIN Number" v={app.pinCode} />
           </div>
@@ -457,6 +521,32 @@ export default function FormDetail() {
           </div>
         )}
 
+        {canDistribute && (
+          <div className="card">
+            <h4>Handover</h4>
+            <p className="panel-hint">
+              The MLA sanctioned {formatMoney(app.approvedAmount)}. Record it as distributed once
+              the applicant has it — a photo taken at handover is required.
+            </p>
+            <button
+              className="btn btn-primary btn-block"
+              disabled={busy}
+              onClick={() => setHandingOver(true)}
+            >
+              Mark as distributed
+            </button>
+          </div>
+        )}
+
+        {app.status === 'accepted' && app.distributedAt && (isSupervisor || isHead) && (
+          <div className="card">
+            <h4>Handover</h4>
+            <Banner kind="success">
+              Distributed {formatDate(app.distributedAt)} by {app.distributedByName || 'a colleague'}.
+            </Banner>
+          </div>
+        )}
+
         {mlaBlocked && (
           <div className="card">
             <h4>Decision</h4>
@@ -479,9 +569,9 @@ export default function FormDetail() {
           </div>
         )}
 
-        {!canVerify && !canDecide && (
-          <button className="btn btn-ghost btn-block" onClick={() => navigate('/forms')}>
-            Back to list
+        {!canVerify && !canDecide && !canDistribute && (
+          <button className="btn btn-ghost btn-block" onClick={() => navigate(-1)}>
+            Back
           </button>
         )}
       </aside>
@@ -611,6 +701,59 @@ export default function FormDetail() {
               placeholder="e.g. Sanctioned towards hospital bill"
             />
           </Field>
+        </Modal>
+      )}
+
+      {/* --------------------------------------------- Handover: camera only */}
+      {handingOver && (
+        <Modal
+          title="Distributed to applicant"
+          description={`Take a photo at handover. ${formatMoney(app.approvedAmount)} sanctioned to ${app.fullName}.`}
+          onClose={() => {
+            setHandingOver(false);
+            setDistPhoto(null);
+          }}
+          actions={
+            <>
+              <button
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => {
+                  setHandingOver(false);
+                  setDistPhoto(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy || !distPhoto}
+                onClick={recordDistribution}
+              >
+                {busy ? <span className="spinner" /> : 'Confirm distributed'}
+              </button>
+            </>
+          }
+        >
+          {distPhoto ? (
+            <div className="handover-shot">
+              <img src={distPhoto.preview} alt="Distribution photo" />
+              <div>
+                <div className="ok">Photo ready</div>
+                <button className="linklike" onClick={() => setDistPhoto(null)}>
+                  Take a different one
+                </button>
+              </div>
+            </div>
+          ) : (
+            <CameraCapture onCaptured={setDistPhoto} onError={setError} disabled={busy} />
+          )}
+
+          {/* Said plainly rather than implied: the photo is the record. */}
+          <p className="modal-note">
+            The photo is stored with the application and is visible to the MLA. Confirming cannot be
+            undone.
+          </p>
         </Modal>
       )}
 

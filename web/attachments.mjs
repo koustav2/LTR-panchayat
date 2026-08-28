@@ -74,6 +74,8 @@ async function submitForm(page, { supportType, supportReason, withFiles, amount 
     await page.locator('[data-field="pinCode"]').fill('755001');
     await page.locator('[data-field="blockId"]').selectOption({ label: 'Dharmasala' });
     await page.waitForTimeout(200);
+    await page.locator('[data-field="zoneId"]').selectOption({ label: 'Dharmasala Zone 1' });
+    await page.waitForTimeout(200);
     await page.locator('[data-field="panchayatId"]').selectOption({ index: 1 });
   }
 
@@ -347,9 +349,11 @@ console.log('\nMLA dashboard amount summary');
   await page.screenshot({ path: `${OUT}a9-mla-summary.png`, fullPage: true });
 
   check('summary card is on the MLA dashboard', await page.locator('.summary-card').isVisible());
-  check('five headline tiles are shown — one per stage plus the two money totals',
-    (await page.locator('.summary-tiles .stat').count()) === 5,
-    await page.locator('.summary-tiles .stat').count());
+  check('the MLA has no handover panel — they decide, they do not distribute',
+    (await page.locator('.handover-card').count()) === 0);
+  check('six headline tiles — the two money totals, the three stages, and the handover',
+    (await page.locator('.summary-card .summary-tiles .stat').count()) === 6,
+    await page.locator('.summary-card .summary-tiles .stat').count());
   check('the rule is stated on screen',
     ((await page.locator('.summary-note').textContent()) || '').includes('only counted once they decide'),
     await page.locator('.summary-note').textContent());
@@ -361,27 +365,44 @@ console.log('\nMLA dashboard amount summary');
 
   // This run sanctioned 9,000 against a 12,500 request, so the two money tiles
   // must disagree and the variance must name the 3,500 difference.
-  const requestedTile = (await page.locator('.summary-tiles .requested .n').textContent()) || '';
-  const sanctionedTile = (await page.locator('.summary-tiles .sanctioned .n').textContent()) || '';
+  const requestedTile = (await page.locator('.summary-card .summary-tiles .requested .n').textContent()) || '';
+  const sanctionedTile = (await page.locator('.summary-card .summary-tiles .sanctioned .n').textContent()) || '';
+  check('the handover tile is its own figure, not a second sanctioned one',
+    (await page.locator('.summary-card .summary-tiles .handed .n').count()) === 1);
   check('the requested tile is not the sanctioned tile',
     requestedTile !== sanctionedTile, `${requestedTile} vs ${sanctionedTile}`);
   check('the sanctioned tile shows what the MLA actually granted',
     sanctionedTile.includes('9,000'), sanctionedTile);
   check('the MLA’s deduction is reported as a variance',
-    ((await page.locator('.summary-tiles .sanctioned .var').textContent()) || '').includes('3,500'),
-    await page.locator('.summary-tiles .sanctioned .c').textContent());
+    ((await page.locator('.summary-card .summary-tiles .sanctioned .var').textContent()) || '').includes('3,500'),
+    await page.locator('.summary-card .summary-tiles .sanctioned .c').textContent());
 
+  // Three levels: blocks open, zones under them, panchayats one level deeper.
+  // Zones start collapsed — sixty panchayat rows unfurled by default would bury
+  // the figures the card exists to show.
   check('block rows are present', (await page.locator('.summary-table .block-row').count()) >= 1);
-  check('panchayat rows are shown under a block',
-    (await page.locator('.summary-table .panchayat-row').count()) >= 1);
+  check('zone rows are shown under a block',
+    (await page.locator('.summary-table .zone-row').count()) >= 1,
+    await page.locator('.summary-table .zone-row').count());
+  check('panchayat rows start collapsed',
+    (await page.locator('.summary-table .panchayat-row').count()) === 0,
+    await page.locator('.summary-table .panchayat-row').count());
   check('a grand total row is present', await page.locator('.summary-table .grand-row').isVisible());
 
-  // Collapsing a block hides its panchayats.
-  const before = await page.locator('.summary-table .panchayat-row').count();
+  // Expanding a zone reveals its panchayats.
+  await page.locator('.summary-table .zone-row').first().click();
+  await page.waitForTimeout(300);
+  const opened = await page.locator('.summary-table .panchayat-row').count();
+  check('expanding a zone reveals its panchayats', opened >= 1, opened);
+
+  // Collapsing the block hides the zones, and the panchayats with them.
+  const zonesBefore = await page.locator('.summary-table .zone-row').count();
   await page.locator('.summary-table .block-row').first().click();
   await page.waitForTimeout(300);
-  const after = await page.locator('.summary-table .panchayat-row').count();
-  check('clicking a block collapses its panchayats', after < before, `${before} -> ${after}`);
+  const zonesAfter = await page.locator('.summary-table .zone-row').count();
+  check('collapsing a block hides its zones', zonesAfter < zonesBefore, `${zonesBefore} -> ${zonesAfter}`);
+  check('and the panchayats under them',
+    (await page.locator('.summary-table .panchayat-row').count()) < opened);
 
   check('no page errors on the dashboard', errs.length === 0, errs.join('|'));
 }
@@ -393,8 +414,10 @@ console.log('\nHead Sahayak sees the same summary as the MLA');
   await page.waitForSelector('.summary-card', { timeout: 15000 });
   check('summary card is on the Head Sahayak dashboard',
     await page.locator('.summary-card').isVisible());
+  check('and a handover panel of its own', await page.locator('.handover-card').isVisible());
   check('the head sees the same sanctioned total as the MLA',
-    ((await page.locator('.summary-tiles .sanctioned .n').textContent()) || '').includes('9,000'));
+    ((await page.locator('.summary-card .summary-tiles .sanctioned .n').textContent()) || '').includes('9,000'));
+
   check('no page errors on the head dashboard', errs.length === 0, errs.join('|'));
 }
 

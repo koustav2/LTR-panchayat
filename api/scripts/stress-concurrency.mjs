@@ -36,7 +36,8 @@ async function call(method, path, body) {
 await call('POST', '/api/auth/login', { username: 'sup.dharma', password: 'Sup@2026#DHM' });
 const m = (await call('GET', '/api/master/bootstrap')).body;
 const block = m.blocks[0];
-const panchayat = m.panchayats.find((p) => p.block_id === block.id);
+const zone = m.zones.find((z) => z.block_id === block.id);
+const panchayat = m.panchayats.find((p) => p.zone_id === zone.id);
 const type = m.supportTypes[0];
 const reason = m.supportReasons.find((r) => r.support_type_id === type.id);
 
@@ -57,6 +58,7 @@ for (let round = 1; round <= ROUNDS; round += 1) {
         guardianName: 'Guardian',
         phone: '9876543210',
         blockId: block.id,
+        zoneId: zone.id,
         panchayatId: panchayat.id,
         pinCode: '753001',
         supportTypeId: type.id,

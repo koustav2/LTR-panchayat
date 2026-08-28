@@ -3,7 +3,7 @@ import api from '../api';
 import { Banner, formatMoney } from './ui';
 
 /**
- * Money rolled up by block, and by panchayat within each block.
+ * Money rolled up three levels deep: block, then zone, then panchayat.
  *
  * Two different quantities live here and they must never be read as one:
  *
@@ -23,6 +23,10 @@ import { Banner, formatMoney } from './ui';
  * Nothing is sanctioned until the MLA decides, so a panchayat whose forms are
  * all still in verification shows a real Requested figure and a zero
  * Sanctioned one. That is the honest picture, not a gap in the data.
+ *
+ * Blocks start expanded and zones start collapsed. Two blocks is a glance;
+ * two blocks x three zones x sixty panchayats is not, so the middle level is
+ * where the tree is opened deliberately rather than by default.
  */
 function Totals({ row, className = '' }) {
   return (
@@ -31,6 +35,7 @@ function Totals({ row, className = '' }) {
       <td className={`num right sanctioned ${className}`}>{formatMoney(row.sanctioned)}</td>
       <td className={`num right wait ${className}`}>{formatMoney(row.awaitingHead)}</td>
       <td className={`num right sent ${className}`}>{formatMoney(row.awaitingMla)}</td>
+      <td className={`num right handed ${className}`}>{formatMoney(row.distributed)}</td>
       <td className={`num right rejected ${className}`}>
         {formatMoney(row.headRejected + row.mlaRejected)}
       </td>
@@ -53,7 +58,8 @@ function Variance({ value }) {
 export default function AmountSummary() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-  const [open, setOpen] = useState({});
+  const [open, setOpen] = useState({});     // blocks
+  const [openZones, setOpenZones] = useState({});
 
   useEffect(() => {
     let alive = true;
@@ -127,6 +133,14 @@ export default function AmountSummary() {
           <div className="c">{overall.awaitingMlaCount} awaiting decision</div>
         </div>
 
+        <div className="stat handed">
+          <div className="l">Distributed</div>
+          <div className="n">{formatMoney(overall.distributed)}</div>
+          <div className="c">
+            {overall.distributedCount} of {overall.acceptedCount} handed over
+          </div>
+        </div>
+
         <div className="stat rejected">
           <div className="l">Rejected</div>
           <div className="n">{formatMoney(overall.headRejected + overall.mlaRejected)}</div>
@@ -140,11 +154,12 @@ export default function AmountSummary() {
         <table className="data summary-table">
           <thead>
             <tr>
-              <th>Block / Panchayat</th>
+              <th>Block / Zone / Panchayat</th>
               <th className="right">Requested</th>
               <th className="right">Sanctioned</th>
               <th className="right">With Head</th>
               <th className="right">With MLA</th>
+              <th className="right">Distributed</th>
               <th className="right">Rejected</th>
             </tr>
           </thead>
@@ -164,14 +179,33 @@ export default function AmountSummary() {
                 </tr>
 
                 {open[b.blockId] &&
-                  b.panchayats.map((p) => (
-                    <tr key={`p-${p.panchayatId}`} className="panchayat-row">
-                      <td className="indent">
-                        {p.panchayatName}
-                        <span className="c-sub"> · {p.totalCount}</span>
-                      </td>
-                      <Totals row={p} className="soft" />
-                    </tr>
+                  b.zones.map((z) => (
+                    <Fragment key={`z-${z.zoneId}`}>
+                      <tr
+                        className="zone-row clickable"
+                        onClick={() => setOpenZones((o) => ({ ...o, [z.zoneId]: !o[z.zoneId] }))}
+                      >
+                        <td className="indent">
+                          <span className="caret" aria-hidden="true">
+                            {openZones[z.zoneId] ? '▾' : '▸'}
+                          </span>
+                          {z.zoneName}
+                          <span className="c-sub"> · {z.totalCount} forms</span>
+                        </td>
+                        <Totals row={z} />
+                      </tr>
+
+                      {openZones[z.zoneId] &&
+                        z.panchayats.map((p) => (
+                          <tr key={`p-${p.panchayatId}`} className="panchayat-row">
+                            <td className="indent-2">
+                              {p.panchayatName}
+                              <span className="c-sub"> · {p.totalCount}</span>
+                            </td>
+                            <Totals row={p} className="soft" />
+                          </tr>
+                        ))}
+                    </Fragment>
                   ))}
               </Fragment>
             ))}

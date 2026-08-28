@@ -56,6 +56,19 @@ export const api = {
     return request('GET', `/applications?${qs.toString()}`);
   },
   summary: () => request('GET', '/applications/summary'),
+
+  // The approval list — every accepted application, for all three roles.
+  approved: (params) => {
+    const qs = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v !== '' && v != null) qs.set(k, v);
+    });
+    return request('GET', `/applications/approved?${qs.toString()}`);
+  },
+
+  // Records that the money reached the applicant. The photo is required.
+  distribute: (id, photoFileId) =>
+    request('PATCH', `/applications/${id}/distribute`, { photoFileId }),
   getApplication: (id, reveal) =>
     request('GET', `/applications/${id}${reveal ? '?revealAadhaar=true' : ''}`),
   createApplication: (payload) => request('POST', '/applications', payload),

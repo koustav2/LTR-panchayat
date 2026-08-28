@@ -7,12 +7,14 @@ import Dashboard from './pages/Dashboard';
 import SahayakForm from './pages/SahayakForm';
 import FormList from './pages/FormList';
 import FormDetail from './pages/FormDetail';
+import ApprovalList from './pages/ApprovalList';
 import { MY_QUEUE, ROLE_LABEL } from './components/ui';
 
 const TITLES = {
   '/': 'Sahayak Form Portal',
   '/form': 'Sahayak Form',
   '/forms': 'List of Form Uploaded',
+  '/approvals': 'Approval List',
 };
 
 /**
@@ -26,6 +28,7 @@ function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const [waiting, setWaiting] = useState(null);
+  const [handover, setHandover] = useState(null);
   const queue = MY_QUEUE[user.role];
 
   useEffect(() => {
@@ -40,7 +43,24 @@ function Sidebar() {
     };
   }, [location.pathname, queue]);
 
+  // How many approved applications are still waiting to be handed over. Only
+  // the two field roles can act on them, so only they are asked to count them.
+  useEffect(() => {
+    if (user.role === 'mla') return undefined;
+    let alive = true;
+    api
+      .approved({ distributed: 'no', page: 1 })
+      .then((d) => alive && setHandover(d.counts.pendingHandover))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [location.pathname, user.role]);
+
   const isForms = location.pathname.startsWith('/forms');
+  const isApprovals = location.pathname.startsWith('/approvals');
+  // The MLA decides; they do not hand money over, so the queue is not theirs.
+  const canDistribute = user.role === 'supervisor' || user.role === 'head_sahayak';
 
   return (
     <aside className="sidebar">
@@ -74,6 +94,16 @@ function Sidebar() {
           {user.role === 'supervisor' ? 'My Forms' : 'All Forms'}
           {waiting > 0 && <span className="pill-count">{waiting}</span>}
         </button>
+
+        {canDistribute && (
+          <button
+            onClick={() => navigate('/approvals')}
+            aria-current={isApprovals ? 'page' : undefined}
+          >
+            <span className="ico" aria-hidden="true">✔</span> Approval List
+            {handover > 0 && <span className="pill-count">{handover}</span>}
+          </button>
+        )}
       </nav>
 
       <div className="sidebar-foot">
@@ -164,6 +194,12 @@ export default function App() {
         />
         <Route path="/forms" element={<FormList />} />
         <Route path="/forms/:id" element={<FormDetail />} />
+        <Route
+          path="/approvals"
+          element={
+            user.role === 'mla' ? <Navigate to="/forms?status=accepted" replace /> : <ApprovalList />
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>
