@@ -141,7 +141,7 @@ export default function FormList() {
 
       {loading && !data ? (
         <Skeletons count={5} />
-      ) : data && data.applications.length === 0 ? (
+      ) : !data ? null : data.applications.length === 0 ? (
         <Empty
           icon="📭"
           title={debouncedQ || status ? 'No matching forms' : 'No forms yet'}

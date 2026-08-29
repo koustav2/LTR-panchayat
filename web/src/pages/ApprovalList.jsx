@@ -207,7 +207,7 @@ export default function ApprovalList() {
 
       {loading && !data ? (
         <Skeletons count={4} />
-      ) : data && data.applications.length === 0 ? (
+      ) : !data ? null : data.applications.length === 0 ? (
         <Empty
           icon="✅"
           title={handover === 'no' ? 'Nothing waiting to be handed over' : 'No approved applications match'}
