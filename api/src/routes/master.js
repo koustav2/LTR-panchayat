@@ -122,7 +122,7 @@ router.get('/support-reasons', async (req, res, next) => {
  * All five lists come down together and the client filters them in memory, so
  * changing Block does not cost a request to load its zones — which matters on a
  * patchy rural connection far more than the few kilobytes do. The whole payload
- * is about 6 KB for 2 blocks, 6 zones and 60 panchayats.
+ * is about 6 KB for 2 blocks, 6 zones and 54 panchayats.
  */
 router.get('/bootstrap', async (req, res, next) => {
   try {
