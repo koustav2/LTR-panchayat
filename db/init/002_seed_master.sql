@@ -85,6 +85,14 @@ INSERT INTO panchayats (block_id, zone_id, name, sort_order) VALUES
   (2, 6, 'BARABATI', 7), (2, 6, 'RAHAMBA', 8), (2, 6, 'RASULPUR', 9)
 ON DUPLICATE KEY UPDATE sort_order = VALUES(sort_order), block_id = VALUES(block_id);
 
+-- One-time, self-healing cleanup: retire the placeholder panchayats an earlier
+-- seed created (names like 'Dharmasala Panchayat 1'). Every real name above is a
+-- village name and never contains the word "Panchayat", so this only ever hits
+-- placeholders. Retire rather than DELETE — an early test application may still
+-- reference one, and a soft-deleted row keeps that foreign key valid while
+-- dropping the name out of the form.
+UPDATE panchayats SET is_active = 0 WHERE name LIKE '%Panchayat%';
+
 -- ---------------------------------------------------------------------------
 -- Type of Support
 -- ---------------------------------------------------------------------------

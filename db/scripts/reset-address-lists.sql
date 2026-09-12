@@ -21,8 +21,11 @@ SET NAMES utf8mb4;
 -- problem — crude, but SQL has no cleaner way to abort a plain script, and a
 -- loud stop beats a foreign-key error nobody reads.
 SET @refs := (SELECT COUNT(*) FROM applications) + (SELECT COUNT(*) FROM beneficiaries);
+-- The table name is the whole error message, so it has to fit MySQL's 64-char
+-- identifier limit — a longer one fails with "identifier too long", which hides
+-- the real reason. Keep this name short.
 SET @sql := IF(@refs > 0,
-  'SELECT * FROM ERROR_applications_or_beneficiaries_still_exist__run_wipe_applications_sql_first',
+  'SELECT * FROM ERROR_run_wipe_applications_sql_first__refs_exist',
   'SELECT "no references — safe to reset the address lists" AS note');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
