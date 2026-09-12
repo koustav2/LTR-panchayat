@@ -11,7 +11,7 @@ import ApprovalList from './pages/ApprovalList';
 import { MY_QUEUE, ROLE_LABEL } from './components/ui';
 
 const TITLES = {
-  '/': 'Sahayak Form Portal',
+  '/': 'Ansuman Memorial Trust',
   '/form': 'Sahayak Form',
   '/forms': 'List of Form Uploaded',
   '/approvals': 'Approval List',
@@ -65,9 +65,9 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="mark" aria-hidden="true">LRT</div>
+        <div className="mark" aria-hidden="true">AMT</div>
         <div>
-          <div className="t">Sahayak Form Portal</div>
+          <div className="t">Ansuman Memorial Trust</div>
           <div className="s">Panchayat Support</div>
         </div>
       </div>

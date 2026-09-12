@@ -25,8 +25,8 @@ export default function Login() {
     <div className="login-wrap">
       <div className="login-card">
         <div className="login-brand">
-          <div className="mark" aria-hidden="true">LRT</div>
-          <h1>Sahayak Form Portal</h1>
+          <div className="mark" aria-hidden="true">AMT</div>
+          <h1>Ansuman Memorial Trust</h1>
           <p>Dharmasala &amp; Rasulpur Dharasamal</p>
         </div>
 
