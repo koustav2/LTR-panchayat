@@ -33,6 +33,7 @@ INSERT INTO zones (id, block_id, name, sort_order) VALUES
   (3, 1, 'ZONE-13',    3),
   (4, 1, 'ZONE-14',    4),
   (5, 1, 'ZONE-15',    5),
+  (7, 1, 'ZONE-16',    6),
   (6, 2, 'ZONE-34/35', 1)
 ON DUPLICATE KEY UPDATE block_id = VALUES(block_id), name = VALUES(name), sort_order = VALUES(sort_order);
 
@@ -76,6 +77,8 @@ INSERT INTO panchayats (block_id, zone_id, name, sort_order) VALUES
   (1, 5, 'UTTARPRATAP PUR', 1), (1, 5, 'DEODA', 2), (1, 5, 'MANGALAPUR', 3),
   (1, 5, 'ARABALA', 4), (1, 5, 'PATUNIA', 5), (1, 5, 'KOTAPUR', 6),
   (1, 5, 'KADAMPAL', 7), (1, 5, 'AREIKANA', 8),
+  -- Dharmasala / ZONE-16
+  (1, 7, 'FIRST GP', 1), (1, 7, 'SECOND GP', 2), (1, 7, 'THIRD GP', 3),
   -- Rasulpur / ZONE-34/35
   (2, 6, 'SRIBANTPUR', 1), (2, 6, 'NATHUABARA', 2), (2, 6, 'JABARA', 3),
   (2, 6, 'ODISSO', 4), (2, 6, 'KALAN', 5), (2, 6, 'SINGHAPUR', 6),

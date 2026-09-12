@@ -22,7 +22,7 @@
 --   2. db/scripts/wipe-applications.sql     clears applications, beneficiaries, files
 --   3. this file                            adds zones and the distribution columns
 --   4. db/scripts/reset-address-lists.sql   drops the old flat panchayat list
---   5. db/init/002_seed_master.sql          seeds 2 blocks / 6 zones / 54 panchayats
+--   5. db/init/002_seed_master.sql          seeds 2 blocks / 7 zones / 57 panchayats
 --
 -- Step 2 runs before this file on purpose, and works on either schema. Step 4
 -- runs after, because the old panchayat rows have no zone they can honestly
