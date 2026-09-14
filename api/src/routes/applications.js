@@ -601,7 +601,10 @@ const STATUS_LABEL = {
   [STATUS.REJECTED]:      'Rejected by MLA',
 };
 
-router.get('/export.csv', requireRole(...REVIEWER_ROLES), async (req, res, next) => {
+// Open to every signed-in role. buildListFilters() scopes a supervisor to their
+// own submissions exactly as the list does, so a supervisor exports the applied
+// users they filed, and a reviewer exports all of them — no role gate needed.
+router.get('/export.csv', async (req, res, next) => {
   try {
     const { where, params } = buildListFilters(req);
     const rows = await query(

@@ -72,8 +72,8 @@ export default function FormList() {
 
   const isMla = user.role === 'mla';
   const isSupervisor = user.role === 'supervisor';
-  // Both reviewer roles see every form and can export; only supervisors are
-  // scoped to their own.
+  // Both reviewer roles see every form; a supervisor sees only their own. Either
+  // way the Export button exports exactly what the current list shows.
   const isReviewer = !isSupervisor;
   const queue = MY_QUEUE[user.role];
 
@@ -125,7 +125,7 @@ export default function FormList() {
               {data && f.key && <> ({data.counts[f.key]})</>}
             </button>
           ))}
-          {isReviewer && (
+          {data && data.total > 0 && (
             <a
               className="chip"
               href={`/api/applications/export.csv?${new URLSearchParams({ q: debouncedQ, status }).toString()}`}
