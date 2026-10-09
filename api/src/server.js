@@ -62,6 +62,7 @@ app.use('/api/master', require('./routes/master'));
 app.use('/api/beneficiaries', require('./routes/beneficiaries'));
 app.use('/api/applications', require('./routes/applications'));
 app.use('/api/files', require('./routes/files'));
+app.use('/api/users', require('./routes/users'));
 
 // Optional: serve the built frontend from the same process. Used by the
 // cPanel "Setup Node.js App" deployment, where there is no separate nginx.

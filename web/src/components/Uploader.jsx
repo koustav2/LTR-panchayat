@@ -63,7 +63,7 @@ function PreviewImage({ previewUrl, fileId, alt, className }) {
   return <img className={className} src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function PhotoUploader({ value, onChange, onError }) {
+export function PhotoUploader({ value, onChange, onError, kind = 'applicant_photo' }) {
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
 
@@ -74,7 +74,7 @@ export function PhotoUploader({ value, onChange, onError }) {
     setBusy(true);
     try {
       const compressed = await compressImage(file, 1200, 0.72);
-      const res = await api.uploadFile(compressed, 'applicant_photo');
+      const res = await api.uploadFile(compressed, kind);
       onChange({
         id: res.file.id,
         name: res.file.originalName,

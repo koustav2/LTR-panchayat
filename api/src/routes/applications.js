@@ -29,6 +29,15 @@ const PAGE_SIZE = 20;
 /** Both reviewers see every application and every money total. */
 const REVIEWER_ROLES = ['head_sahayak', 'mla'];
 
+/**
+ * Overdue distribution-photo alerts. Once the Head Sahayak hands money over
+ * for distribution, the Sahayak has this many days to upload the photo before
+ * the home page starts flagging it — first to the field roles, then, two days
+ * later, to the MLA as well.
+ */
+const PHOTO_ALERT_DAYS = 3;
+const PHOTO_ALERT_DAYS_MLA = 5;
+
 /* -------------------------------------------------------------------------- */
 /* Create                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -356,7 +365,7 @@ router.get('/', async (req, res, next) => {
               a.head_comment, a.submitted_at, a.reviewed_at, a.head_reviewed_at,
               a.applicant_name, a.guardian_name, a.phone,
               a.amount, a.approved_amount, bn.aadhaar_last4,
-              a.distributed_at,
+              a.handed_over_at, a.distributed_at, a.returned_at,
               bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name,
@@ -417,7 +426,9 @@ router.get('/', async (req, res, next) => {
         panchayatName: r.panchayat_name,
         supportType: r.support_type,
         supportReason: r.support_reason,
+        handedOverAt: r.handed_over_at,
         distributedAt: r.distributed_at,
+        returnedAt: r.returned_at,
         amount: Number(r.amount),
         // null until the MLA decides — the client shows a dash, never a zero,
         // because "sanctioned nothing yet" and "sanctioned ₹0" are different.
@@ -614,7 +625,9 @@ router.get('/export.csv', async (req, res, next) => {
               bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               a.amount, a.approved_amount,
+              a.handed_over_at, hov.full_name AS handed_over_by_name,
               a.distributed_at, dv.full_name AS distributed_by_name,
+              a.returned_at, rtu.full_name AS returned_by_name, a.return_remark,
               a.pp_recommend, a.pp_comment, a.ms_recommend, a.ms_comment,
               a.mp_recommend, a.mp_comment,
               u.full_name AS submitted_by_name,
@@ -631,6 +644,8 @@ router.get('/export.csv', async (req, res, next) => {
          LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          LEFT JOIN users rv      ON rv.id = a.reviewed_by
          LEFT JOIN users dv      ON dv.id = a.distributed_by
+         LEFT JOIN users hov     ON hov.id = a.handed_over_by
+         LEFT JOIN users rtu     ON rtu.id = a.returned_by
          ${where}
          ORDER BY a.submitted_at DESC
          LIMIT 10000`,
@@ -644,7 +659,9 @@ router.get('/export.csv', async (req, res, next) => {
       'Amount Requested', 'Amount Sanctioned', 'Difference',
       'Head Sahayak', 'Head Verified At', 'Head Comment',
       'MLA', 'MLA Decided At', 'Rejection Reason', 'MLA Comment',
+      'Handed Over At', 'Handed Over By',
       'Distributed', 'Distributed At', 'Distributed By',
+      'Returned At', 'Returned By', 'Return Remark',
       'Panchayat Prabhari', 'PP Comment', 'Mandal Sabhapati', 'MS Comment',
       'Mandal Prabhari', 'MP Comment', 'Submitted By',
     ];
@@ -671,8 +688,10 @@ router.get('/export.csv', async (req, res, next) => {
         r.amount, sanctioned == null ? '' : sanctioned.toFixed(2), diff,
         r.head_reviewed_by_name, r.head_reviewed_at, r.head_comment,
         r.reviewed_by_name, r.reviewed_at, r.rejection_reason, r.mla_comment,
+        r.handed_over_at, r.handed_over_by_name,
         r.status === STATUS.ACCEPTED ? (r.distributed_at ? 'Yes' : 'No') : '',
         r.distributed_at, r.distributed_by_name,
+        r.returned_at, r.returned_by_name, r.return_remark,
         r.pp_recommend, r.pp_comment, r.ms_recommend, r.ms_comment,
         r.mp_recommend, r.mp_comment, r.submitted_by_name,
       ].map(esc).join(','));
@@ -727,9 +746,12 @@ router.get('/approved', async (req, res, next) => {
       }
     });
 
+    // 'no' means work still to do: neither distributed nor returned. A
+    // returned application is closed — it must not sit in the work queue.
     const distributed = String(req.query.distributed || '').toLowerCase();
     if (distributed === 'yes') where.push('a.distributed_at IS NOT NULL');
-    if (distributed === 'no') where.push('a.distributed_at IS NULL');
+    if (distributed === 'no') where.push('a.distributed_at IS NULL AND a.returned_at IS NULL');
+    if (distributed === 'returned') where.push('a.returned_at IS NOT NULL');
 
     const q = String(req.query.q || '').trim();
     if (q) {
@@ -753,11 +775,17 @@ router.get('/approved', async (req, res, next) => {
 
     const countRow = await queryOne(
       `SELECT COUNT(*) AS total,
-              SUM(a.distributed_at IS NULL)     AS pending_handover,
-              SUM(a.distributed_at IS NOT NULL) AS done_handover,
+              SUM(a.handed_over_at IS NULL AND a.distributed_at IS NULL
+                  AND a.returned_at IS NULL)                              AS pending_handover,
+              SUM(a.handed_over_at IS NOT NULL AND a.distributed_at IS NULL
+                  AND a.returned_at IS NULL)                              AS photo_pending,
+              SUM(a.distributed_at IS NOT NULL)                           AS done_handover,
+              SUM(a.returned_at IS NOT NULL)                              AS returned_count,
               SUM(COALESCE(a.approved_amount, 0)) AS sanctioned_total,
               SUM(CASE WHEN a.distributed_at IS NOT NULL
-                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END) AS distributed_total
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END) AS distributed_total,
+              SUM(CASE WHEN a.returned_at IS NOT NULL
+                       THEN COALESCE(a.approved_amount, 0) ELSE 0 END) AS returned_total
          FROM applications a
          JOIN beneficiaries bn ON bn.id = a.beneficiary_id
          ${whereSql}`,
@@ -767,12 +795,15 @@ router.get('/approved', async (req, res, next) => {
     const rows = await query(
       `SELECT a.id, a.reference_no, a.applicant_name, a.guardian_name, a.phone,
               a.amount, a.approved_amount, a.reviewed_at,
-              a.distributed_at, a.distribution_photo_file_id,
+              a.handed_over_at, a.distributed_at, a.distribution_photo_file_id,
+              a.returned_at,
               bn.aadhaar_last4,
               bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
               st.name AS support_type, sr.name AS support_reason,
               u.full_name AS submitted_by_name,
-              dv.full_name AS distributed_by_name
+              hov.full_name AS handed_over_by_name,
+              dv.full_name AS distributed_by_name,
+              rtu.full_name AS returned_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
@@ -781,9 +812,12 @@ router.get('/approved', async (req, res, next) => {
          JOIN support_types st   ON st.id = a.support_type_id
          JOIN support_reasons sr ON sr.id = a.support_reason_id
          JOIN users u            ON u.id  = a.submitted_by
+         LEFT JOIN users hov     ON hov.id = a.handed_over_by
          LEFT JOIN users dv      ON dv.id = a.distributed_by
+         LEFT JOIN users rtu     ON rtu.id = a.returned_by
          ${whereSql}
-         ORDER BY (a.distributed_at IS NOT NULL), a.reviewed_at ASC, a.id ASC
+         ORDER BY (a.distributed_at IS NOT NULL OR a.returned_at IS NOT NULL),
+                  a.reviewed_at ASC, a.id ASC
          LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
       params
     );
@@ -794,11 +828,14 @@ router.get('/approved', async (req, res, next) => {
       total: Number(countRow.total),
       counts: {
         pendingHandover: Number(countRow.pending_handover || 0),
+        photoPending: Number(countRow.photo_pending || 0),
         distributed: Number(countRow.done_handover || 0),
+        returned: Number(countRow.returned_count || 0),
       },
       totals: {
         sanctioned: Number(countRow.sanctioned_total || 0),
         distributed: Number(countRow.distributed_total || 0),
+        returned: Number(countRow.returned_total || 0),
       },
       applications: rows.map((r) => ({
         id: r.id,
@@ -816,9 +853,13 @@ router.get('/approved', async (req, res, next) => {
         approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
         reviewedAt: r.reviewed_at,
         submittedByName: r.submitted_by_name,
+        handedOverAt: r.handed_over_at,
+        handedOverByName: r.handed_over_by_name,
         distributedAt: r.distributed_at,
         distributedByName: r.distributed_by_name,
         distributionPhotoFileId: r.distribution_photo_file_id,
+        returnedAt: r.returned_at,
+        returnedByName: r.returned_by_name,
       })),
     });
   } catch (err) {
@@ -827,14 +868,194 @@ router.get('/approved', async (req, res, next) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Distribution — recording that the money reached the applicant                */
+/* Pending distribution photo — handed over, photo not yet uploaded            */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/applications/pending-photo   ?page=
+ *
+ * The queue behind the "Pending Distribution Photo" page: every application the
+ * Head Sahayak has handed over for distribution where the Sahayak has not yet
+ * uploaded the photo (and the money has not been returned). Visible to the
+ * Sahayaks and the Head Sahayak; only a Sahayak can act on it.
+ *
+ * Oldest handover first — that is the one closest to (or past) the alert line.
+ */
+router.get('/pending-photo', requireRole('supervisor', 'head_sahayak'), async (req, res, next) => {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const offset = (page - 1) * PAGE_SIZE;
+
+    const whereSql = `WHERE a.status = 'accepted'
+            AND a.handed_over_at IS NOT NULL
+            AND a.distributed_at IS NULL
+            AND a.returned_at IS NULL`;
+
+    const countRow = await queryOne(
+      `SELECT COUNT(*) AS total,
+              SUM(a.handed_over_at <= NOW() - INTERVAL ${PHOTO_ALERT_DAYS} DAY) AS overdue,
+              SUM(COALESCE(a.approved_amount, 0)) AS sanctioned_total
+         FROM applications a
+         ${whereSql}`
+    );
+
+    const rows = await query(
+      `SELECT a.id, a.reference_no, a.applicant_name, a.phone,
+              a.amount, a.approved_amount,
+              a.handed_over_at, TIMESTAMPDIFF(DAY, a.handed_over_at, NOW()) AS days_waiting,
+              bl.name AS block_name, z.name AS zone_name, p.name AS panchayat_name,
+              st.name AS support_type, sr.name AS support_reason,
+              hov.full_name AS handed_over_by_name
+         FROM applications a
+         JOIN blocks bl          ON bl.id = a.block_id
+         JOIN zones z            ON z.id  = a.zone_id
+         JOIN panchayats p       ON p.id  = a.panchayat_id
+         JOIN support_types st   ON st.id = a.support_type_id
+         JOIN support_reasons sr ON sr.id = a.support_reason_id
+         LEFT JOIN users hov     ON hov.id = a.handed_over_by
+         ${whereSql}
+         ORDER BY a.handed_over_at ASC, a.id ASC
+         LIMIT ${PAGE_SIZE} OFFSET ${offset}`
+    );
+
+    res.json({
+      page,
+      pageSize: PAGE_SIZE,
+      total: Number(countRow.total),
+      overdue: Number(countRow.overdue || 0),
+      sanctionedTotal: Number(countRow.sanctioned_total || 0),
+      alertDays: PHOTO_ALERT_DAYS,
+      applications: rows.map((r) => ({
+        id: r.id,
+        referenceNo: r.reference_no,
+        fullName: r.applicant_name,
+        phone: r.phone,
+        amount: Number(r.amount),
+        approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
+        blockName: r.block_name,
+        zoneName: r.zone_name,
+        panchayatName: r.panchayat_name,
+        supportType: r.support_type,
+        supportReason: r.support_reason,
+        handedOverAt: r.handed_over_at,
+        handedOverByName: r.handed_over_by_name,
+        daysWaiting: Number(r.days_waiting),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Overdue distribution-photo alerts for the home page                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/applications/alerts
+ *
+ * Applications handed over for distribution whose photo is overdue. Shown as a
+ * banner on everyone's home page until the photo is uploaded (or the money is
+ * returned): after 3 days for the field roles, after 5 days for the MLA too.
+ * The threshold is applied by the caller's role, so the same endpoint serves
+ * every dashboard.
+ */
+router.get('/alerts', async (req, res, next) => {
+  try {
+    const days = req.user.role === 'mla' ? PHOTO_ALERT_DAYS_MLA : PHOTO_ALERT_DAYS;
+
+    const rows = await query(
+      `SELECT a.id, a.reference_no, a.applicant_name, a.approved_amount,
+              a.handed_over_at, TIMESTAMPDIFF(DAY, a.handed_over_at, NOW()) AS days_waiting,
+              p.name AS panchayat_name
+         FROM applications a
+         JOIN panchayats p ON p.id = a.panchayat_id
+        WHERE a.status = 'accepted'
+          AND a.handed_over_at IS NOT NULL
+          AND a.handed_over_at <= NOW() - INTERVAL ${days} DAY
+          AND a.distributed_at IS NULL
+          AND a.returned_at IS NULL
+        ORDER BY a.handed_over_at ASC
+        LIMIT 50`
+    );
+
+    res.json({
+      alertDays: days,
+      count: rows.length,
+      alerts: rows.map((r) => ({
+        id: r.id,
+        referenceNo: r.reference_no,
+        fullName: r.applicant_name,
+        approvedAmount: r.approved_amount == null ? null : Number(r.approved_amount),
+        panchayatName: r.panchayat_name,
+        handedOverAt: r.handed_over_at,
+        daysWaiting: Number(r.days_waiting),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Handover and distribution — getting the sanctioned money to the applicant    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * PATCH /api/applications/:id/handover
+ *
+ * After the MLA's final approval, the Head Sahayak hands the money over for
+ * distribution. This starts the clock: from this date the Sahayak has
+ * PHOTO_ALERT_DAYS days to upload the distribution photo before the home page
+ * starts flagging it. Only the Head Sahayak can do this, and only once.
+ */
+router.patch('/:id/handover', requireRole('head_sahayak'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
+
+    const existing = await queryOne(
+      'SELECT id, status, reference_no, handed_over_at, distributed_at, returned_at FROM applications WHERE id = ?',
+      [id]
+    );
+    if (!existing) throw new ApiError(404, 'Application not found.');
+    if (existing.status !== STATUS.ACCEPTED) {
+      throw new ApiError(409, 'Only an application the MLA has accepted can be handed over for distribution.');
+    }
+    if (existing.handed_over_at) {
+      throw new ApiError(409, 'This application has already been handed over for distribution.');
+    }
+
+    const result = await query(
+      `UPDATE applications
+          SET handed_over_at = NOW(), handed_over_by = ?
+        WHERE id = ? AND status = ? AND handed_over_at IS NULL`,
+      [req.user.id, id, STATUS.ACCEPTED]
+    );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was handed over by someone else a moment ago.');
+    }
+
+    await audit(req, {
+      entity: 'application',
+      entityId: id,
+      action: 'handover_for_distribution',
+      detail: { referenceNo: existing.reference_no },
+    });
+
+    res.json({ ok: true, handedOver: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * PATCH /api/applications/:id/distribute   { photoFileId }
  *
- * Either field role can record a handover: whoever is standing in front of the
- * applicant. The MLA cannot — they decide, they do not distribute.
+ * The Sahayak — and only the Sahayak — records that the money reached the
+ * applicant. The Head Sahayak hands over; the Sahayak distributes and proves
+ * it; the MLA decides. The Head Sahayak must have handed the application over
+ * first, and a return (money sent back) closes the door on this.
  *
  * The photo is required and is the whole point of the endpoint. It must be a
  * file of kind `distribution_photo`, which the client obtains by capturing from
@@ -844,7 +1065,7 @@ router.get('/approved', async (req, res, next) => {
  *
  * Recording a handover is one-way, like every other transition here.
  */
-router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async (req, res, next) => {
+router.patch('/:id/distribute', requireRole('supervisor'), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
@@ -852,12 +1073,18 @@ router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async
     const photoFileId = cleanId(req.body.photoFileId, 'Distribution photo');
 
     const existing = await queryOne(
-      'SELECT id, status, reference_no, distributed_at FROM applications WHERE id = ?',
+      'SELECT id, status, reference_no, handed_over_at, distributed_at, returned_at FROM applications WHERE id = ?',
       [id]
     );
     if (!existing) throw new ApiError(404, 'Application not found.');
     if (existing.status !== STATUS.ACCEPTED) {
       throw new ApiError(409, 'Only an application the MLA has accepted can be marked as distributed.');
+    }
+    if (!existing.handed_over_at) {
+      throw new ApiError(409, 'The Head Sahayak has not handed this application over for distribution yet.');
+    }
+    if (existing.returned_at) {
+      throw new ApiError(409, 'The money for this application was returned; it can no longer be distributed.');
     }
     if (existing.distributed_at) {
       throw new ApiError(409, 'This application is already marked as distributed.');
@@ -882,7 +1109,8 @@ router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async
     const result = await query(
       `UPDATE applications
           SET distributed_at = NOW(), distributed_by = ?, distribution_photo_file_id = ?
-        WHERE id = ? AND status = ? AND distributed_at IS NULL`,
+        WHERE id = ? AND status = ? AND distributed_at IS NULL AND returned_at IS NULL
+          AND handed_over_at IS NOT NULL`,
       [req.user.id, photoFileId, id, STATUS.ACCEPTED]
     );
     if (result.affectedRows === 0) {
@@ -909,6 +1137,88 @@ router.patch('/:id/distribute', requireRole('supervisor', 'head_sahayak'), async
   }
 });
 
+/**
+ * PATCH /api/applications/:id/return   { photoFileId, remark }
+ *
+ * When distribution cannot be completed — the applicant cannot be found, has
+ * refused, has died — the Sahayak returns the money and records it here with a
+ * photo and a remark. Both are required and both are visible to the Head
+ * Sahayak and the MLA. Like distribution, this is one-way, and only the
+ * Sahayak can do it.
+ */
+router.patch('/:id/return', requireRole('supervisor'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Invalid application id.');
+
+    const photoFileId = cleanId(req.body.photoFileId, 'Return photo');
+
+    const remark = String(req.body.remark || '').trim();
+    if (remark.length < 3) {
+      throw new ApiError(400, 'A remark is required when returning the money.');
+    }
+    if (remark.length > 2000) {
+      throw new ApiError(400, 'Remark is too long (maximum 2000 characters).');
+    }
+
+    const existing = await queryOne(
+      'SELECT id, status, reference_no, handed_over_at, distributed_at, returned_at FROM applications WHERE id = ?',
+      [id]
+    );
+    if (!existing) throw new ApiError(404, 'Application not found.');
+    if (existing.status !== STATUS.ACCEPTED) {
+      throw new ApiError(409, 'Only an accepted application can have its money returned.');
+    }
+    if (!existing.handed_over_at) {
+      throw new ApiError(409, 'The Head Sahayak has not handed this application over for distribution yet.');
+    }
+    if (existing.distributed_at) {
+      throw new ApiError(409, 'This application is already marked as distributed — the money cannot be returned.');
+    }
+    if (existing.returned_at) {
+      throw new ApiError(409, 'The money for this application has already been returned.');
+    }
+
+    const photo = await queryOne('SELECT id, kind FROM files WHERE id = ?', [photoFileId]);
+    if (!photo) throw new ApiError(400, 'That photo was not found. Please take it again.');
+    if (photo.kind !== 'return_photo') {
+      throw new ApiError(400, 'That file is not a return photo.');
+    }
+    const reused = await queryOne(
+      'SELECT id FROM applications WHERE return_photo_file_id = ? LIMIT 1',
+      [photoFileId]
+    );
+    if (reused) throw new ApiError(400, 'That photo has already been used for another application.');
+
+    const result = await query(
+      `UPDATE applications
+          SET returned_at = NOW(), returned_by = ?, return_photo_file_id = ?, return_remark = ?
+        WHERE id = ? AND status = ? AND distributed_at IS NULL AND returned_at IS NULL
+          AND handed_over_at IS NOT NULL`,
+      [req.user.id, photoFileId, remark, id, STATUS.ACCEPTED]
+    );
+    if (result.affectedRows === 0) {
+      throw new ApiError(409, 'This application was updated by someone else a moment ago.');
+    }
+
+    await query(
+      'INSERT IGNORE INTO application_files (application_id, file_id) VALUES (?, ?)',
+      [id, photoFileId]
+    );
+
+    await audit(req, {
+      entity: 'application',
+      entityId: id,
+      action: 'money_returned',
+      detail: { referenceNo: existing.reference_no, photoFileId, remark },
+    });
+
+    res.json({ ok: true, returned: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /* Detail                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -927,7 +1237,9 @@ router.get('/:id', async (req, res, next) => {
               u.full_name AS submitted_by_name,
               hv.full_name AS head_reviewed_by_name,
               rv.full_name AS reviewed_by_name,
-              dv.full_name AS distributed_by_name
+              dv.full_name AS distributed_by_name,
+              hov.full_name AS handed_over_by_name,
+              rtu.full_name AS returned_by_name
          FROM applications a
          JOIN beneficiaries bn   ON bn.id = a.beneficiary_id
          JOIN blocks bl          ON bl.id = a.block_id
@@ -939,6 +1251,8 @@ router.get('/:id', async (req, res, next) => {
          LEFT JOIN users hv      ON hv.id = a.head_reviewed_by
          LEFT JOIN users rv      ON rv.id = a.reviewed_by
          LEFT JOIN users dv      ON dv.id = a.distributed_by
+         LEFT JOIN users hov     ON hov.id = a.handed_over_by
+         LEFT JOIN users rtu     ON rtu.id = a.returned_by
         WHERE a.id = ?`,
       [id]
     );
@@ -1003,9 +1317,17 @@ router.get('/:id', async (req, res, next) => {
         amount: Number(row.amount),
         approvedAmount: row.approved_amount == null ? null : Number(row.approved_amount),
 
+        handedOverAt: row.handed_over_at,
+        handedOverByName: row.handed_over_by_name,
+
         distributedAt: row.distributed_at,
         distributedByName: row.distributed_by_name,
         distributionPhotoFileId: row.distribution_photo_file_id,
+
+        returnedAt: row.returned_at,
+        returnedByName: row.returned_by_name,
+        returnPhotoFileId: row.return_photo_file_id,
+        returnRemark: row.return_remark,
 
         ppRecommend: row.pp_recommend,
         ppComment: row.pp_comment,

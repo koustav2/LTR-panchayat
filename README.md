@@ -3,14 +3,16 @@
 Mobile-first web application for recording and reviewing Sahayak support
 applications across Dharmasala and Rasulpur Dharasamal blocks.
 
-Three roles, all seeded directly in the database — there is no signup and no
-user-management screen:
+Three roles. The reviewer accounts are seeded directly in the database; Sahayak
+(supervisor) accounts can also be created in the app by the Head Sahayak, from
+the **Sahayak Profiles** screen — login id, password, block, and an optional
+email, phone and profile photo:
 
 | Role | What they do |
 |---|---|
-| **Supervisor** | Fills the Sahayak Form; sees their own submissions and where each has reached; records handovers from the Approval List |
-| **Head Sahayak** | Verifies every new form and either sends it to the MLA or rejects it, with a comment either way; sees all forms, the money rollup and the Approval List |
-| **MLA** | Decides the forms the Head Sahayak has forwarded; sets the amount actually sanctioned; exports CSV. Does not distribute |
+| **Supervisor (Sahayak)** | Fills the Sahayak Form; sees their own submissions and where each has reached; uploads the distribution photo once the Head Sahayak hands money over — or returns the money with a photo and remark if distribution cannot be completed |
+| **Head Sahayak** | Verifies every new form and either sends it to the MLA or rejects it, with a comment either way; hands accepted applications over for distribution; creates and manages Sahayak profiles; sees all forms, the money rollup and the Approval List |
+| **MLA** | Decides the forms the Head Sahayak has forwarded; sets the amount actually sanctioned; exports CSV. Does not hand over or distribute |
 
 An application moves in one direction only:
 
@@ -33,11 +35,25 @@ A form the Head Sahayak rejects still appears in the MLA's list — marked
 "Rejected by Head Sahayak" with the head's comment — but the MLA cannot act on
 it. That rejection is final.
 
-Once the MLA accepts, the money still has to reach the applicant. Both field
-roles get an **Approval List** — every accepted application, filtered by Block /
-Zone / Panchayat — and record the handover with a photo taken at that moment.
-Distribution is tracked separately from the decision: an accepted application is
-either awaiting handover or distributed, and stays accepted either way.
+Once the MLA accepts, the money still has to reach the applicant, in three
+steps on a separate axis (the application stays `accepted` throughout):
+
+1. **Handover for Distribution** — the Head Sahayak hands the money over from
+   the application's detail page. This starts the clock.
+2. **Distribution photo** — the Sahayak (only the Sahayak) uploads the photo
+   taken when the applicant receives the money. Until then the application sits
+   on the **Pending Distribution Photo** page, visible to the Sahayaks and the
+   Head Sahayak. If the photo is still missing **3 days** after the handover, a
+   banner appears on every home page except the MLA's; at **5 days** the MLA
+   sees it too. The banner stays until the photo is uploaded.
+3. **Return of money** — if distribution cannot be completed, the Sahayak
+   records a return instead, with a photo and a remark, both visible to the
+   Head Sahayak and the MLA. A returned application is closed: it can no longer
+   be distributed.
+
+Both field roles also get an **Approval List** — every accepted application,
+filtered by Block / Zone / Panchayat, badged by where its money is (awaiting
+handover, photo pending, distributed, returned).
 
 **Stack:** React 18 + Vite · Node 20 + Express · MySQL 8 · Docker Compose
 **Bundle:** 71 KB gzipped · **Tests:** 201 API + 80 journey + 53 responsive + 64 attachment/amount + 46 approval/camera checks, all passing
@@ -131,6 +147,23 @@ straight to the MLA rather than being pushed back into a queue that did not
 exist when they were submitted. Applications already `accepted` get
 `approved_amount = amount`, because at the time there was no way to sanction a
 different figure. The migration is safe to run more than once.
+
+### Upgrading to handover, return and Sahayak profiles
+
+`db/migrations/005_handover_return_profiles.sql` adds the handover-for-
+distribution step, the return-of-money record, and the user profile columns. It
+is **non-destructive** — nothing is wiped — and safe to run more than once:
+
+```bash
+docker compose exec -T db mysql -u root -p"$PW" lrt_panchayat \
+  < db/migrations/005_handover_return_profiles.sql
+docker compose up -d --build
+```
+
+Applications already marked distributed before the migration never went through
+an explicit handover, so their `handed_over_at` is backfilled from
+`distributed_at` — the history reads sensibly and nothing lands on the pending
+or overdue lists.
 
 ---
 
@@ -234,8 +267,18 @@ supervisor's work, and it is why `GET /:id` and `GET /files/:id` both carry a
 matching exception for accepted applications — a list you can see whose detail
 you cannot open is just broken.
 
-`PATCH /api/applications/:id/distribute` records it. The photo is required, is
-stored with the application, and cannot be reused for a second handover.
+The sequence after acceptance, each step one-way and role-locked:
+
+| Endpoint | Who | What |
+|---|---|---|
+| `PATCH /api/applications/:id/handover` | Head Sahayak | Hands the money over for distribution; starts the photo clock |
+| `PATCH /api/applications/:id/distribute` | Sahayak only | Records the handover photo. Blocked until the Head Sahayak has handed over |
+| `PATCH /api/applications/:id/return` | Sahayak only | Distribution not possible — money returned, with photo + required remark |
+| `GET /api/applications/pending-photo` | Sahayak, Head Sahayak | The Pending Distribution Photo queue |
+| `GET /api/applications/alerts` | all roles | Overdue photos: ≥3 days after handover for field roles, ≥5 for the MLA |
+
+Each photo is required, stored with the application, and cannot be reused for a
+second application.
 
 ### On "camera, not gallery"
 
@@ -425,6 +468,9 @@ not the control.
 | List / view | own only | all | all |
 | Verify → MLA, or reject | — | ✓ (`pending_head` only) | — |
 | Accept / reject, set sanctioned amount | — | — | ✓ (`pending_mla` only) |
+| Handover for Distribution | — | ✓ (accepted only) | — |
+| Upload distribution photo / return money | ✓ (after handover) | — | — |
+| Create / manage Sahayak profiles | — | ✓ | — |
 | Amount rollup, CSV export | — | ✓ | ✓ |
 
 Each stage guard is repeated in the `UPDATE`'s `WHERE` clause, so two people
@@ -472,7 +518,8 @@ api/
   scripts/smoke-test.js  155 API checks
   scripts/stress-concurrency.mjs  Deliberate deadlock, to exercise the retry
 web/
-  src/pages/             Login, Dashboard, SahayakForm, FormList, FormDetail, ApprovalList
+  src/pages/             Login, Dashboard, SahayakForm, FormList, FormDetail,
+                         ApprovalList, PendingPhotoList, SahayakUsers
   src/components/CameraCapture.jsx   getUserMedia capture, no gallery path
   e2e.mjs                50 browser checks on a phone viewport
 scripts/backup.sh        Nightly dump + uploads tarball, 14-day retention

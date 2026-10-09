@@ -66,9 +66,37 @@ export const api = {
     return request('GET', `/applications/approved?${qs.toString()}`);
   },
 
-  // Records that the money reached the applicant. The photo is required.
+  // Head Sahayak hands an accepted application's money over for distribution.
+  // Starts the clock on the distribution-photo deadline.
+  handover: (id) => request('PATCH', `/applications/${id}/handover`),
+
+  // Records that the money reached the applicant. Sahayak only; the photo is
+  // required and the Head Sahayak must have handed the application over first.
   distribute: (id, photoFileId) =>
     request('PATCH', `/applications/${id}/distribute`, { photoFileId }),
+
+  // Records that the money was returned because distribution could not be
+  // completed. Sahayak only; photo and remark both required.
+  returnMoney: (id, photoFileId, remark) =>
+    request('PATCH', `/applications/${id}/return`, { photoFileId, remark }),
+
+  // Handed over, photo not yet uploaded — the Pending Distribution Photo page.
+  pendingPhoto: (params) => {
+    const qs = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v !== '' && v != null) qs.set(k, v);
+    });
+    return request('GET', `/applications/pending-photo?${qs.toString()}`);
+  },
+
+  // Overdue distribution-photo alerts for the home page. The server applies
+  // the right threshold for the caller's role (3 days; 5 for the MLA).
+  alerts: () => request('GET', '/applications/alerts'),
+
+  // Sahayak profile management (Head Sahayak only).
+  listUsers: () => request('GET', '/users'),
+  createUser: (payload) => request('POST', '/users', payload),
+  updateUser: (id, payload) => request('PATCH', `/users/${id}`, payload),
   getApplication: (id, reveal) =>
     request('GET', `/applications/${id}${reveal ? '?revealAadhaar=true' : ''}`),
   createApplication: (payload) => request('POST', '/applications', payload),

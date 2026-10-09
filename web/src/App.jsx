@@ -8,6 +8,8 @@ import SahayakForm from './pages/SahayakForm';
 import FormList from './pages/FormList';
 import FormDetail from './pages/FormDetail';
 import ApprovalList from './pages/ApprovalList';
+import PendingPhotoList from './pages/PendingPhotoList';
+import SahayakUsers from './pages/SahayakUsers';
 import { MY_QUEUE, ROLE_LABEL } from './components/ui';
 
 const TITLES = {
@@ -15,6 +17,8 @@ const TITLES = {
   '/form': 'Sahayak Form',
   '/forms': 'List of Form Uploaded',
   '/approvals': 'Approval List',
+  '/pending-photos': 'Pending Distribution Photo',
+  '/sahayaks': 'Sahayak Profiles',
 };
 
 /**
@@ -29,6 +33,7 @@ function Sidebar() {
   const navigate = useNavigate();
   const [waiting, setWaiting] = useState(null);
   const [handover, setHandover] = useState(null);
+  const [photoQueue, setPhotoQueue] = useState(null);
   const queue = MY_QUEUE[user.role];
 
   useEffect(() => {
@@ -43,14 +48,19 @@ function Sidebar() {
     };
   }, [location.pathname, queue]);
 
-  // How many approved applications are still waiting to be handed over. Only
-  // the two field roles can act on them, so only they are asked to count them.
+  // How many approved applications are still waiting to be handed over, and
+  // how many handovers are still waiting on their distribution photo. Only the
+  // two field roles can act on them, so only they are asked to count them.
   useEffect(() => {
     if (user.role === 'mla') return undefined;
     let alive = true;
     api
       .approved({ distributed: 'no', page: 1 })
       .then((d) => alive && setHandover(d.counts.pendingHandover))
+      .catch(() => {});
+    api
+      .pendingPhoto({ page: 1 })
+      .then((d) => alive && setPhotoQueue(d.total))
       .catch(() => {});
     return () => {
       alive = false;
@@ -59,6 +69,8 @@ function Sidebar() {
 
   const isForms = location.pathname.startsWith('/forms');
   const isApprovals = location.pathname.startsWith('/approvals');
+  const isPendingPhotos = location.pathname.startsWith('/pending-photos');
+  const isSahayaks = location.pathname.startsWith('/sahayaks');
   // The MLA decides; they do not hand money over, so the queue is not theirs.
   const canDistribute = user.role === 'supervisor' || user.role === 'head_sahayak';
 
@@ -102,6 +114,25 @@ function Sidebar() {
           >
             <span className="ico" aria-hidden="true">✔</span> Approval List
             {handover > 0 && <span className="pill-count">{handover}</span>}
+          </button>
+        )}
+
+        {canDistribute && (
+          <button
+            onClick={() => navigate('/pending-photos')}
+            aria-current={isPendingPhotos ? 'page' : undefined}
+          >
+            <span className="ico" aria-hidden="true">📷</span> Pending Photos
+            {photoQueue > 0 && <span className="pill-count">{photoQueue}</span>}
+          </button>
+        )}
+
+        {user.role === 'head_sahayak' && (
+          <button
+            onClick={() => navigate('/sahayaks')}
+            aria-current={isSahayaks ? 'page' : undefined}
+          >
+            <span className="ico" aria-hidden="true">👤</span> Sahayak Profiles
           </button>
         )}
       </nav>
@@ -198,6 +229,20 @@ export default function App() {
           path="/approvals"
           element={
             user.role === 'mla' ? <Navigate to="/forms?status=accepted" replace /> : <ApprovalList />
+          }
+        />
+        <Route
+          path="/pending-photos"
+          element={
+            user.role === 'mla' ? <Navigate to="/forms?status=accepted" replace /> : <PendingPhotoList />
+          }
+        />
+        <Route
+          path="/sahayaks"
+          element={
+            <RequireRole role="head_sahayak">
+              <SahayakUsers />
+            </RequireRole>
           }
         />
         <Route path="*" element={<Navigate to="/" replace />} />

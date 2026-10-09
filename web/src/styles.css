@@ -144,6 +144,8 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
 /* Five stages do not fit across a phone, so they wrap two-then-three rather
    than shrinking to unreadable. From 700px up they sit on one line. */
+.counts-4 { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 700px) { .counts-4 { grid-template-columns: repeat(4, 1fr); } }
 .counts-5 { grid-template-columns: repeat(2, 1fr); }
 @media (min-width: 700px) { .counts-5 { grid-template-columns: repeat(5, 1fr); } }
 .count {
@@ -518,6 +520,10 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
      form, where the date is part of the record. */
   .datestrip.dash-only { display: none; }
 
+  /* Anything that exists only because the desktop page heading is hidden on
+     phones — e.g. a duplicate primary button. */
+  .mobile-only { display: none; }
+
   .tiles { grid-template-columns: repeat(2, minmax(0, 340px)); }
   .counts { max-width: 560px; }
 
@@ -875,15 +881,36 @@ table.data .c-delta.down { color: var(--amber-700); }
 @media (min-width: 900px) { .summary-tiles.two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .summary-foot { padding: 0 14px 14px; }
 
-/* Handover badges. Green once done; amber while it is still work. */
+/* Handover badges. Green once done; amber while it is still work; indigo while
+   the photo is awaited; red when the money came back. */
 .badge.distributed  { background: var(--green-50); color: var(--green-800); border: 1px solid var(--green-100); }
 .badge.to-hand-over { background: var(--amber-50); color: var(--amber-700); border: 1px solid var(--amber-200); }
+.badge.photo-pending { background: var(--indigo-50); color: var(--indigo-700); border: 1px solid var(--indigo-200); }
+.badge.returned     { background: var(--red-50); color: var(--red-700); border: 1px solid var(--red-200); }
+.badge.overdue      { background: var(--red-50); color: var(--red-700); border: 1px solid var(--red-200); font-weight: 700; }
 
 .row-done {
   margin-top: 9px; padding: 8px 11px; border-radius: 8px;
   background: var(--green-50); border: 1px solid var(--green-100);
   color: var(--green-800); font-size: 13px; font-weight: 600;
 }
+
+.row-returned {
+  margin-top: 9px; padding: 8px 11px; border-radius: 8px;
+  background: var(--red-50); border: 1px solid var(--red-200);
+  color: var(--red-700); font-size: 13px; font-weight: 600;
+}
+
+/* The overdue distribution-photo banner on the home page. */
+.alert-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.alert-rows a {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 13.5px; color: inherit; text-decoration: none;
+  padding: 7px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.6);
+}
+.alert-rows a:hover { text-decoration: underline; }
+.alert-rows .ref { font-weight: 700; font-variant-numeric: tabular-nums; }
+.alert-rows .days { margin-left: auto; font-weight: 700; white-space: nowrap; }
 
 .counts-3 { grid-template-columns: repeat(3, 1fr); }
 /* The third tile holds a money figure, not a count, so it needs room to breathe

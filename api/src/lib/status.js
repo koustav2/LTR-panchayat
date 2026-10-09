@@ -18,6 +18,17 @@
  *
  * Nothing moves backwards. A head rejection never reaches the MLA for a
  * decision — the MLA can see it, with the head's comment, but cannot act on it.
+ *
+ * After ACCEPTED, the money moves on a separate axis (columns, not statuses):
+ *
+ *   handed_over_*   Head Sahayak hands the money over for distribution
+ *        |
+ *        |--- distributed_*  Sahayak uploads the distribution photo   (done)
+ *        '--- returned_*     Sahayak returns the money, photo + remark (closed)
+ *
+ * If the photo is still missing 3 days after the handover, the home page flags
+ * it to every field role; at 5 days, to the MLA as well (see PHOTO_ALERT_DAYS
+ * in routes/applications.js).
  */
 
 const STATUS = {

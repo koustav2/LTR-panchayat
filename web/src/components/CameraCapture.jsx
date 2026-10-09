@@ -44,7 +44,7 @@ const supportsGetUserMedia = () =>
   !!navigator.mediaDevices &&
   typeof navigator.mediaDevices.getUserMedia === 'function';
 
-export default function CameraCapture({ onCaptured, onError, disabled }) {
+export default function CameraCapture({ onCaptured, onError, disabled, kind = 'distribution_photo' }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const fileRef = useRef(null);
@@ -139,8 +139,8 @@ export default function CameraCapture({ onCaptured, onError, disabled }) {
   async function upload(blob, previewUrl) {
     setPhase('uploading');
     try {
-      const file = new File([blob], `distribution-${Date.now()}.jpg`, { type: 'image/jpeg' });
-      const res = await api.uploadFile(file, 'distribution_photo');
+      const file = new File([blob], `${kind.replace(/_photo$/, '')}-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      const res = await api.uploadFile(file, kind);
       onCaptured({
         id: res.file.id,
         name: res.file.originalName,

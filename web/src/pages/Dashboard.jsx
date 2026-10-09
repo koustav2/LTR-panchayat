@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
-import { MY_QUEUE, DeskHead, formatDate, formatMoney } from '../components/ui';
+import { MY_QUEUE, DeskHead, Banner, formatDate, formatMoney } from '../components/ui';
 import AmountSummary from '../components/AmountSummary';
 
 /**
@@ -26,6 +26,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [counts, setCounts] = useState(null);
   const [handover, setHandover] = useState(null);
+  const [photoQueue, setPhotoQueue] = useState(null);
+  const [alerts, setAlerts] = useState(null);
 
   const isSupervisor = user.role === 'supervisor';
   const isHead = user.role === 'head_sahayak';
@@ -53,10 +55,28 @@ export default function Dashboard() {
       .approved({ distributed: 'no', page: 1 })
       .then((d) => alive && setHandover({ counts: d.counts, totals: d.totals }))
       .catch(() => {});
+    api
+      .pendingPhoto({ page: 1 })
+      .then((d) => alive && setPhotoQueue(d))
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, [isMla]);
+
+  // Overdue distribution photos. Every role asks; the server applies the right
+  // threshold — 3 days after handover for the field roles, 5 for the MLA — and
+  // the banner stays until the photo is uploaded or the money is returned.
+  useEffect(() => {
+    let alive = true;
+    api
+      .alerts()
+      .then((d) => alive && setAlerts(d))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   return (
     <>
@@ -69,6 +89,32 @@ export default function Dashboard() {
         </div>
         <div className="note">Signed in as {user.fullName}</div>
       </div>
+
+      {/* Distribution photos running late. Listed by name so nobody has to go
+          looking for which ones; each line opens the application. */}
+      {alerts && alerts.count > 0 && (
+        <Banner kind="error" icon="⏰">
+          <strong>
+            {alerts.count === 1
+              ? 'A distribution photo is overdue'
+              : `${alerts.count} distribution photos are overdue`}
+          </strong>{' '}
+          — handed over more than {alerts.alertDays} days ago and still waiting on the Sahayak's
+          photo.
+          <div className="alert-rows">
+            {alerts.alerts.map((a) => (
+              <Link key={a.id} to={`/forms/${a.id}`}>
+                <span className="ref">{a.referenceNo}</span>
+                <span>{a.fullName}</span>
+                <span>· {a.panchayatName}</span>
+                <span className="days">
+                  {a.daysWaiting} {a.daysWaiting === 1 ? 'day' : 'days'}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </Banner>
+      )}
 
       <div className="tiles">
         {isSupervisor && (
@@ -105,8 +151,27 @@ export default function Dashboard() {
                 {handover && handover.counts.pendingHandover > 0
                   ? `${handover.counts.pendingHandover} approved ${
                       handover.counts.pendingHandover === 1 ? 'application' : 'applications'
-                    } waiting to be handed over`
-                  : 'Approved applications — record what has been distributed'}
+                    } waiting to be handed over${isHead ? ' for distribution' : ''}`
+                  : 'Approved applications — handover and distribution'}
+              </span>
+            </span>
+          </button>
+        )}
+
+        {/* Handovers still waiting on their distribution photo. */}
+        {!isMla && (
+          <button className="tile" onClick={() => navigate('/pending-photos')}>
+            <span className="tile-icon" aria-hidden="true">📷</span>
+            <span>
+              <span className="tile-title">Pending Distribution Photo</span>
+              <span className="tile-desc">
+                {photoQueue && photoQueue.total > 0
+                  ? `${photoQueue.total} ${
+                      photoQueue.total === 1 ? 'handover waits' : 'handovers wait'
+                    } for the distribution photo${
+                      photoQueue.overdue > 0 ? ` — ${photoQueue.overdue} overdue` : ''
+                    }`
+                  : 'Handed-over applications waiting on the photo'}
               </span>
             </span>
           </button>

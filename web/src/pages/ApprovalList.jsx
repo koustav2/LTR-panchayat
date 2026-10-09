@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
 import {
-  DeskHead, Empty, Skeletons, Banner,
+  DeskHead, Empty, Skeletons, Banner, HandoverBadge,
   formatDate, formatMoney,
 } from '../components/ui';
 
@@ -25,8 +25,9 @@ import {
    what lets the chip render as selected — an empty string would be
    indistinguishable from the unset default. */
 const HANDOVER = [
-  { key: 'no', label: 'Pending handover' },
+  { key: 'no', label: 'Still to do' },
   { key: 'yes', label: 'Distributed' },
+  { key: 'returned', label: 'Returned' },
   { key: 'all', label: 'All approved' },
 ];
 
@@ -113,10 +114,14 @@ export default function ApprovalList() {
       </DeskHead>
 
       {data && (
-        <div className="counts counts-3">
+        <div className="counts counts-4">
           <div className="count wait">
             <div className="n">{data.counts.pendingHandover}</div>
-            <div className="l">Pending handover</div>
+            <div className="l">Awaiting handover</div>
+          </div>
+          <div className="count sent">
+            <div className="n">{data.counts.photoPending}</div>
+            <div className="l">Photo pending</div>
           </div>
           <div className="count accepted">
             <div className="n">{data.counts.distributed}</div>
@@ -124,7 +129,11 @@ export default function ApprovalList() {
           </div>
           <div className="count">
             <div className="n">{formatMoney(data.totals.distributed)}</div>
-            <div className="l">of {formatMoney(data.totals.sanctioned)} handed over</div>
+            <div className="l">
+              of {formatMoney(data.totals.sanctioned)} handed over
+              {data.counts.returned > 0 &&
+                ` · ${data.counts.returned} returned (${formatMoney(data.totals.returned)})`}
+            </div>
           </div>
         </div>
       )}
@@ -224,9 +233,7 @@ export default function ApprovalList() {
                 <div className="row-top">
                   <span className="row-ref">{a.referenceNo}</span>
                   <span style={{ flex: 1 }} />
-                  <span className={`badge ${a.distributedAt ? 'distributed' : 'to-hand-over'}`}>
-                    {a.distributedAt ? 'Distributed' : 'To hand over'}
-                  </span>
+                  <HandoverBadge app={a} />
                 </div>
                 <div className="row-name">{a.fullName}</div>
                 <div className="row-meta">{a.supportType} · {a.supportReason}</div>
@@ -252,9 +259,19 @@ export default function ApprovalList() {
                 <div className="row-meta">
                   Approved {formatDate(a.reviewedAt)} · filed by {a.submittedByName}
                 </div>
+                {a.handedOverAt && !a.distributedAt && !a.returnedAt && (
+                  <div className="row-meta">
+                    Handed over for distribution {formatDate(a.handedOverAt)} by {a.handedOverByName}
+                  </div>
+                )}
                 {a.distributedAt && (
                   <div className="row-done">
-                    Handed over {formatDate(a.distributedAt)} by {a.distributedByName}
+                    Distributed {formatDate(a.distributedAt)} by {a.distributedByName}
+                  </div>
+                )}
+                {a.returnedAt && (
+                  <div className="row-returned">
+                    Money returned {formatDate(a.returnedAt)} by {a.returnedByName}
                   </div>
                 )}
               </button>
@@ -299,11 +316,11 @@ export default function ApprovalList() {
                     <td><div>{a.zoneName}</div><div className="c-sub">{a.blockName}</div></td>
                     <td className="num">{formatDate(a.reviewedAt)}</td>
                     <td>
-                      <span className={`badge ${a.distributedAt ? 'distributed' : 'to-hand-over'}`}>
-                        {a.distributedAt ? 'Distributed' : 'To hand over'}
-                      </span>
-                      {a.distributedAt && (
-                        <div className="c-sub">{formatDate(a.distributedAt)}</div>
+                      <HandoverBadge app={a} />
+                      {(a.distributedAt || a.returnedAt || a.handedOverAt) && (
+                        <div className="c-sub">
+                          {formatDate(a.distributedAt || a.returnedAt || a.handedOverAt)}
+                        </div>
                       )}
                     </td>
                   </tr>
