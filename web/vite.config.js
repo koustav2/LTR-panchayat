@@ -8,7 +8,8 @@ export default defineConfig({
     // In development the API runs separately; in production nginx (or the
     // Node process itself, on cPanel) serves both from the same origin.
     proxy: {
-      '/api': { target: 'http://localhost:4000', changeOrigin: true },
+      // API_PORT lets dev run beside anything else already squatting on 4000.
+      '/api': { target: `http://localhost:${process.env.API_PORT || 4000}`, changeOrigin: true },
     },
   },
   build: { outDir: 'dist', sourcemap: false },

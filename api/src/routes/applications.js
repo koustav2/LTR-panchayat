@@ -38,6 +38,14 @@ const REVIEWER_ROLES = ['head_sahayak', 'mla'];
 const PHOTO_ALERT_DAYS = 3;
 const PHOTO_ALERT_DAYS_MLA = 5;
 
+/**
+ * Minimum days expected between two supports to the same person. Not a hard
+ * block: the MLA is warned while accepting inside the gap and decides either
+ * way — so this lives here, next to the data that measures it, and travels to
+ * the UI with the application rather than being duplicated there.
+ */
+const SUPPORT_GAP_DAYS = 100;
+
 /* -------------------------------------------------------------------------- */
 /* Create                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -1285,6 +1293,63 @@ router.get('/:id', async (req, res, next) => {
       await audit(req, { entity: 'beneficiary', entityId: row.beneficiary_id, action: 'aadhaar_reveal' });
     }
 
+    // Every earlier application from the same person, newest first, so the
+    // reviewer sees what was asked before, what was granted, and when support
+    // was last actually taken. Reviewers only — a supervisor would otherwise
+    // see applications filed by colleagues in other blocks.
+    let history;
+    let lastSupport;
+    if (REVIEWER_ROLES.includes(req.user.role)) {
+      lastSupport = null;
+      const prior = await query(
+        `SELECT a.id, a.reference_no, a.status, a.amount, a.approved_amount,
+                a.submitted_at, a.reviewed_at, a.handed_over_at, a.distributed_at, a.returned_at,
+                st.name AS support_type
+           FROM applications a
+           JOIN support_types st ON st.id = a.support_type_id
+          WHERE a.beneficiary_id = ? AND a.id <> ?
+          ORDER BY a.submitted_at DESC
+          LIMIT 50`,
+        [row.beneficiary_id, id]
+      );
+
+      history = prior.map((h) => ({
+        id: h.id,
+        referenceNo: h.reference_no,
+        status: h.status,
+        supportType: h.support_type,
+        amount: Number(h.amount),
+        approvedAmount: h.approved_amount == null ? null : Number(h.approved_amount),
+        submittedAt: h.submitted_at,
+        decidedAt: h.reviewed_at,
+        distributedAt: h.distributed_at,
+        returnedAt: h.returned_at,
+      }));
+
+      // "Taken" = accepted and the money not returned. The anchor date is when
+      // the money actually moved (distribution, else handover), falling back to
+      // the MLA's acceptance for a sanction still sitting in the office.
+      for (const h of prior) {
+        if (h.status !== STATUS.ACCEPTED || h.returned_at) continue;
+        const takenAt = h.distributed_at || h.handed_over_at || h.reviewed_at;
+        if (!takenAt) continue;
+        if (!lastSupport || new Date(takenAt) > new Date(lastSupport.takenAt)) {
+          lastSupport = {
+            applicationId: h.id,
+            referenceNo: h.reference_no,
+            takenAt,
+            amount: h.approved_amount == null ? null : Number(h.approved_amount),
+          };
+        }
+      }
+      if (lastSupport) {
+        lastSupport.daysSince = Math.max(
+          0,
+          Math.floor((Date.now() - new Date(lastSupport.takenAt).getTime()) / 86400000)
+        );
+      }
+    }
+
     res.json({
       application: {
         id: row.id,
@@ -1339,6 +1404,10 @@ router.get('/:id', async (req, res, next) => {
         // of kind 'applicant_photo' is attached to *this* application. The
         // beneficiary's stored photo is the right thing to show instead.
         photoFileId: row.photo_file_id,
+        // Reviewer roles only; undefined (and so absent) for a supervisor.
+        history,
+        lastSupport,
+        supportGapDays: history === undefined ? undefined : SUPPORT_GAP_DAYS,
         files: files.map((f) => ({
           id: f.id,
           kind: f.kind,

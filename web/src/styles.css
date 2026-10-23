@@ -4,6 +4,19 @@
    sticky action bar so Submit is always reachable. */
 
 :root {
+  /* Brand palette, sampled from the Ansuman Memorial Trust logo: blue for the
+     chrome (bars, buttons, focus), orange as the accent. Green stays below for
+     success/accepted semantics only. */
+  --brand-50:  #eef6fc;
+  --brand-100: #d7eaf7;
+  --brand-600: #2580c6;
+  --brand-700: #1d6aa6;
+  --brand-800: #174f7c;
+
+  --accent-100: #fde8cd;
+  --accent-500: #f8931f;
+  --accent-700: #b4680a;
+
   --green-50:  #f0fdf4;
   --green-100: #dcfce7;
   --green-600: #16a34a;
@@ -67,7 +80,7 @@ body {
 
 .topbar {
   position: sticky; top: 0; z-index: 30;
-  background: var(--green-700);
+  background: var(--brand-700);
   color: #fff;
   padding: 0 16px;
   padding-top: env(safe-area-inset-top, 0px);
@@ -81,6 +94,13 @@ body {
 .topbar h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
 .topbar .sub { font-size: 12px; opacity: .85; font-weight: 400; }
 .topbar .spacer { flex: 1; }
+
+/* The emblem on the mobile top bar — shown on the home page, where there is no
+   back button competing for the same slot. */
+.topbar-logo {
+  width: 36px; height: 36px; flex: none; border-radius: 10px;
+  background: #fff; padding: 3px; object-fit: contain; display: block;
+}
 
 .back-btn {
   background: rgba(255,255,255,.15); border: 0; color: #fff;
@@ -108,13 +128,13 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .datestrip {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 12px; flex-wrap: wrap;
-  background: var(--green-50); border: 1px solid var(--green-100);
-  color: var(--green-800);
+  background: var(--brand-50); border: 1px solid var(--brand-100);
+  color: var(--brand-800);
   border-radius: var(--radius); padding: 12px 14px; margin-bottom: 16px;
 }
 .datestrip .label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .8; }
 .datestrip .value { font-size: 16px; font-weight: 650; }
-.datestrip .note { font-size: 12px; color: var(--green-800); opacity: .85; }
+.datestrip .note { font-size: 12px; color: var(--brand-800); opacity: .85; }
 
 /* Dashboard tiles */
 .tiles { display: grid; gap: 14px; grid-template-columns: 1fr; }
@@ -133,7 +153,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .tile-icon {
   width: 52px; height: 52px; flex: none; border-radius: 14px;
   display: grid; place-items: center; font-size: 24px;
-  background: var(--green-100); color: var(--green-800);
+  background: var(--accent-100); color: var(--accent-700);
 }
 /* display:block — these are spans inside a button, so without it the title and
    description run together on one line. */
@@ -162,7 +182,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .count.rejected .n { color: var(--red-600); }
 /* The stage waiting on the signed-in role. One ring, nothing louder — it marks
    the queue without turning the strip into a traffic light. */
-.count.mine { border-color: var(--green-600); box-shadow: 0 0 0 2px var(--green-50); }
+.count.mine { border-color: var(--brand-600); box-shadow: 0 0 0 2px var(--brand-50); }
 
 /* ---------------------------------------------------------------- forms */
 
@@ -181,7 +201,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .section[open] > summary::after { content: '⌃'; transform: translateY(3px); }
 .section-num {
   width: 24px; height: 24px; border-radius: 7px; flex: none;
-  background: var(--green-700); color: #fff;
+  background: var(--brand-700); color: #fff;
   font-size: 12px; font-weight: 700; display: grid; place-items: center;
 }
 .section-body { padding: 16px; display: grid; gap: 16px; }
@@ -215,8 +235,8 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 }
 .field select:disabled { background-color: var(--slate-100); color: var(--slate-400); }
 .field input:focus, .field select:focus, .field textarea:focus {
-  outline: none; border-color: var(--green-600);
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, .15);
+  outline: none; border-color: var(--brand-600);
+  box-shadow: 0 0 0 3px rgba(37, 128, 198, .18);
 }
 .field.invalid input, .field.invalid select, .field.invalid textarea { border-color: var(--red-600); }
 .field .hint { font-size: 12px; color: var(--slate-500); margin-top: 5px; }
@@ -271,8 +291,8 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
 }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
-.btn-primary { background: var(--green-700); color: #fff; flex: 1; }
-.btn-primary:active:not(:disabled) { background: var(--green-800); }
+.btn-primary { background: var(--brand-700); color: #fff; flex: 1; }
+.btn-primary:active:not(:disabled) { background: var(--brand-800); }
 .btn-ghost { background: #fff; color: var(--slate-700); border-color: var(--slate-300); }
 .btn-danger { background: var(--red-600); color: #fff; flex: 1; }
 .btn-block { width: 100%; }
@@ -285,7 +305,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   padding: 13px 40px 13px 42px; min-height: 50px;
   border: 1px solid var(--slate-300); border-radius: 10px; background: #fff;
 }
-.searchbar input:focus { outline: none; border-color: var(--green-600); box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
+.searchbar input:focus { outline: none; border-color: var(--brand-600); box-shadow: 0 0 0 3px rgba(37,128,198,.18); }
 .searchbar .icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--slate-400); font-size: 16px; }
 .searchbar .clear {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
@@ -299,9 +319,9 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   padding: 9px 15px; min-height: 40px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--slate-300); background: #fff; color: var(--slate-600);
 }
-.chip[aria-pressed=true] { background: var(--green-700); border-color: var(--green-700); color: #fff; }
+.chip[aria-pressed=true] { background: var(--brand-700); border-color: var(--brand-700); color: #fff; }
 /* The queue waiting on this role. Kept subtle: it is already sorted first. */
-.chip-mine { border-color: var(--green-600); color: var(--green-800); }
+.chip-mine { border-color: var(--brand-600); color: var(--brand-800); }
 .chip-mine[aria-pressed=true] { color: #fff; }
 
 .rows { display: grid; gap: 10px; }
@@ -403,8 +423,9 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 .login-wrap { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; background: var(--slate-100); }
 .login-card { width: 100%; max-width: 400px; background: #fff; border-radius: 16px; box-shadow: var(--shadow-md); padding: 28px 24px; border: 1px solid var(--slate-200); }
 .login-brand { text-align: center; margin-bottom: 24px; }
-.login-brand .mark { width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 16px; background: var(--green-700); color: #fff; display: grid; place-items: center; font-size: 24px; font-weight: 700; }
-.login-brand h1 { font-size: 20px; margin: 0 0 4px; }
+/* The full logo already carries the trust's name, so the card has no h1; the
+   image gets the accessible name instead. */
+.login-brand .logo { width: 210px; max-width: 80%; height: auto; display: block; margin: 0 auto 10px; }
 .login-brand p { font-size: 13px; color: var(--slate-500); margin: 0; }
 .login-card .field { margin-bottom: 14px; }
 
@@ -457,7 +478,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
     display: flex; flex-direction: column;
     width: 248px; flex: none;
     position: sticky; top: 0; height: 100vh;
-    background: var(--green-800);
+    background: var(--brand-800);
     color: #fff;
     padding: 20px 14px;
   }
@@ -468,11 +489,11 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
     border-bottom: 1px solid rgba(255, 255, 255, .14);
     margin-bottom: 14px;
   }
+  /* The emblem sits in a white tile so its blue and orange read against the
+     blue sidebar. */
   .sidebar-brand .mark {
     width: 38px; height: 38px; flex: none; border-radius: 10px;
-    background: rgba(255, 255, 255, .16);
-    display: grid; place-items: center;
-    font-size: 13px; font-weight: 700; letter-spacing: .02em;
+    background: #fff; padding: 3px; object-fit: contain; display: block;
   }
   .sidebar-brand .t { font-size: 14px; font-weight: 650; line-height: 1.25; }
   .sidebar-brand .s { font-size: 11px; opacity: .7; }
@@ -489,7 +510,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   .sidebar-nav .ico { width: 18px; text-align: center; flex: none; }
   .sidebar-nav .pill-count {
     margin-left: auto; font-size: 11px; font-weight: 700;
-    background: rgba(255, 255, 255, .22); padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-500); color: #fff; padding: 2px 8px; border-radius: 999px;
   }
 
   .sidebar-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.14); }
@@ -545,7 +566,7 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   }
   table.data td { padding: 13px 14px; border-bottom: 1px solid var(--slate-100); vertical-align: top; }
   table.data tr.clickable { cursor: pointer; }
-  table.data tr.clickable:hover td { background: var(--green-50); }
+  table.data tr.clickable:hover td { background: var(--brand-50); }
   table.data tr:last-child td { border-bottom: 0; }
   table.data .c-ref { font-size: 12.5px; font-weight: 650; color: var(--slate-600); font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.data .c-name { font-weight: 620; }
@@ -612,12 +633,12 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
 /* The support request, called out so a reviewer sees it before anything else. */
 .support-callout {
   display: grid; gap: 12px;
-  background: var(--green-50); border: 1px solid var(--green-100);
+  background: var(--brand-50); border: 1px solid var(--brand-100);
   border-radius: 10px; padding: 14px;
 }
 @media (min-width: 640px) { .support-callout { grid-template-columns: 1fr 1fr; } }
-.support-callout .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--green-800); opacity: .75; margin-bottom: 3px; }
-.support-type   { font-size: 18px; font-weight: 700; color: var(--green-800); line-height: 1.25; }
+.support-callout .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand-800); opacity: .75; margin-bottom: 3px; }
+.support-type   { font-size: 18px; font-weight: 700; color: var(--brand-800); line-height: 1.25; }
 .support-reason { font-size: 15px; font-weight: 600; color: var(--slate-700); line-height: 1.3; }
 
 /* The MLA's note on a decision. Tinted to match the outcome. */
@@ -641,12 +662,48 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   .attachments .photo-tile img { width: 168px; height: 204px; }
 }
 
+/* --------------------------------------------------- applicant history --- */
+
+/* Earlier requests from the same person, on the detail page (reviewers only).
+   The gap line carries the one fact that drives the decision — how long since
+   support was last taken — so it reads as a status, warn-tinted inside the
+   100-day gap and green outside it. */
+.gap-note {
+  border-radius: 8px; padding: 10px 12px; font-size: 13.5px;
+  margin-bottom: 10px; line-height: 1.45;
+}
+.gap-note.warn { background: var(--amber-50); border: 1px solid var(--amber-200); color: var(--amber-700); }
+.gap-note.ok   { background: var(--green-50); border: 1px solid var(--green-100); color: var(--green-800); }
+
+.history-rows { display: grid; gap: 8px; }
+.history-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  border: 1px solid var(--slate-200); background: var(--slate-50);
+  border-radius: 10px; padding: 10px 12px;
+}
+.history-row:hover { background: var(--brand-50); border-color: var(--brand-100); }
+.history-row .h-when { display: grid; gap: 1px; min-width: 150px; }
+.history-row .h-ref  { font-size: 12px; font-weight: 700; color: var(--slate-500); font-variant-numeric: tabular-nums; }
+.history-row .h-date { font-size: 12.5px; color: var(--slate-500); }
+.history-row .h-type { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 120px; }
+/* Requested / Got, borrowing the list-card money labels. */
+.history-row .h-money { display: flex; gap: 18px; align-items: baseline; }
+.history-row .ml { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-500); }
+.history-row .mv { display: block; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.history-row .mv.granted  { color: var(--green-800); }
+.history-row .mv.pendingv { color: var(--slate-400); font-weight: 600; }
+
+@media (max-width: 480px) {
+  .history-row .badge { order: -1; margin-left: auto; }
+}
+
 /* ------------------------------------------------- amount + summary ------ */
 
 /* Plain number entry — no currency adornment inside the field. */
 .field input.amount-field { font-variant-numeric: tabular-nums; font-weight: 600; }
 
-.support-callout .amount-cell { grid-column: 1 / -1; border-top: 1px solid var(--green-100); padding-top: 11px; }
+.support-callout .amount-cell { grid-column: 1 / -1; border-top: 1px solid var(--brand-100); padding-top: 11px; }
 .support-amount { font-size: 22px; font-weight: 700; color: var(--green-800); font-variant-numeric: tabular-nums; }
 
 .row-amount {
@@ -724,7 +781,7 @@ table.data .c-delta.down { color: var(--amber-700); }
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .summary-table { min-width: 720px; font-size: 13.5px; }
 .summary-table .block-row td { background: var(--slate-50); font-size: 14px; }
-.summary-table .block-row:hover td { background: var(--green-50); }
+.summary-table .block-row:hover td { background: var(--brand-50); }
 .summary-table .caret { display: inline-block; width: 16px; color: var(--slate-400); }
 .summary-table .panchayat-row td { color: var(--slate-600); }
 .summary-table .indent { padding-left: 34px; }
@@ -872,7 +929,7 @@ table.data .c-delta.down { color: var(--amber-700); }
 /* Three-level rollup. Indentation is the only thing distinguishing a zone row
    from a panchayat row, so it has to be unambiguous at 13px on a phone. */
 .summary-table .zone-row td { background: #fbfcfd; }
-.summary-table .zone-row:hover td { background: var(--green-50); }
+.summary-table .zone-row:hover td { background: var(--brand-50); }
 .summary-table .zone-row .indent { padding-left: 30px; font-weight: 600; }
 .summary-table .indent-2 { padding-left: 58px; }
 .summary-table { min-width: 820px; }

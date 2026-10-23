@@ -77,7 +77,7 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="mark" aria-hidden="true">AMT</div>
+        <img className="mark" src="/logo-mark.png" alt="" aria-hidden="true" />
         <div>
           <div className="t">Ansuman Memorial Trust</div>
           <div className="s">Panchayat Support</div>
@@ -167,7 +167,9 @@ function Shell({ children }) {
 
       <header className="topbar">
         <div className="topbar-inner">
-          {!isRoot && (
+          {isRoot ? (
+            <img className="topbar-logo" src="/logo-mark.png" alt="" aria-hidden="true" />
+          ) : (
             <button className="back-btn" onClick={() => navigate(-1)} aria-label="Go back">
               ‹
             </button>
@@ -204,7 +206,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="login-wrap">
-        <div className="spinner" style={{ borderColor: '#cbd5e1', borderTopColor: '#15803d' }} />
+        <div className="spinner" style={{ borderColor: '#cbd5e1', borderTopColor: '#1d6aa6' }} />
       </div>
     );
   }

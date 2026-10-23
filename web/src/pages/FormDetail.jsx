@@ -121,6 +121,9 @@ export default function FormDetail() {
   // MLA
   const [rejecting, setRejecting] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  // The applicant took support within the last 100 days and the MLA pressed
+  // Accept — yes continues to the amount, no rejects on the spot.
+  const [gapWarning, setGapWarning] = useState(false);
   const [reason, setReason] = useState('');
   const [comment, setComment] = useState('');
   const [sanction, setSanction] = useState('');
@@ -158,6 +161,7 @@ export default function FormDetail() {
   const closeAll = () => {
     setRejecting(false);
     setAccepting(false);
+    setGapWarning(false);
     setForwarding(false);
     setHeadRejecting(false);
     setConfirmingHandover(false);
@@ -294,6 +298,14 @@ export default function FormDetail() {
   const mlaBlocked = isMla && (app.status === 'pending_head' || app.status === 'head_rejected');
 
   const delta = app.approvedAmount == null ? 0 : app.approvedAmount - app.amount;
+
+  // The 100-day gap between supports. `lastSupport` only counts money actually
+  // taken (accepted and not returned), so a pending or rejected earlier form
+  // never trips the warning.
+  const gapActive = Boolean(
+    app.lastSupport && app.supportGapDays && app.lastSupport.daysSince < app.supportGapDays
+  );
+  const gapRemaining = gapActive ? app.supportGapDays - app.lastSupport.daysSince : 0;
 
   // A repeat applicant often does not re-upload their photo, so nothing of
   // kind 'applicant_photo' is attached to this particular application. Fall
@@ -503,6 +515,63 @@ export default function FormDetail() {
           </div>
         </div>
 
+        {/* Earlier requests from the same person — reviewers only (the server
+            omits `history` for supervisors). Each row opens that application.
+            The gap line answers the question the reviewer is actually asking:
+            how long since this person last took support? */}
+        {app.history && app.history.length > 0 && (
+          <div className="detail-group">
+            <h3>Previous Requests from this Applicant ({app.history.length})</h3>
+            {app.lastSupport ? (
+              <div className={`gap-note ${gapActive ? 'warn' : 'ok'}`}>
+                Last support taken on {formatDate(app.lastSupport.takenAt)} —{' '}
+                <strong>
+                  {app.lastSupport.daysSince === 0
+                    ? 'today'
+                    : `${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} ago`}
+                </strong>
+                {gapActive
+                  ? ` · ${gapRemaining} ${gapRemaining === 1 ? 'day' : 'days'} of the ${app.supportGapDays}-day gap still remain`
+                  : ` · outside the ${app.supportGapDays}-day gap`}
+                {app.lastSupport.amount != null && ` · ${formatMoney(app.lastSupport.amount)} granted`}
+              </div>
+            ) : (
+              <div className="gap-note ok">
+                Earlier requests exist, but none was granted — no support taken yet.
+              </div>
+            )}
+            <div className="history-rows">
+              {app.history.map((h) => (
+                <button key={h.id} className="history-row" onClick={() => navigate(`/forms/${h.id}`)}>
+                  <span className="h-when">
+                    <span className="h-ref">{h.referenceNo}</span>
+                    <span className="h-date">
+                      {formatDate(h.submittedAt)}
+                      {h.status === 'accepted' &&
+                        ` · taken ${formatDate(h.distributedAt || h.decidedAt)}`}
+                    </span>
+                  </span>
+                  <span className="h-type">{h.supportType}</span>
+                  <span className="h-money">
+                    <span>
+                      <span className="ml">Requested</span>
+                      <span className="mv">{formatMoney(h.amount)}</span>
+                    </span>
+                    <span>
+                      <span className="ml">Got</span>
+                      <span className={`mv ${h.approvedAmount != null ? 'granted' : 'pendingv'}`}>
+                        {h.approvedAmount != null ? formatMoney(h.approvedAmount) : '—'}
+                        {h.returnedAt ? ' (returned)' : ''}
+                      </span>
+                    </span>
+                  </span>
+                  <StatusBadge status={h.status} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="detail-group">
           <h3>Applicant</h3>
           <div className="dl">
@@ -517,7 +586,7 @@ export default function FormDetail() {
                   <button
                     onClick={() => load(true)}
                     style={{
-                      background: 'none', border: 0, color: '#15803d', textDecoration: 'underline',
+                      background: 'none', border: 0, color: '#1d6aa6', textDecoration: 'underline',
                       cursor: 'pointer', font: 'inherit', fontSize: 13, padding: 0, marginLeft: 4,
                     }}
                   >
@@ -641,7 +710,10 @@ export default function FormDetail() {
                   disabled={busy}
                   onClick={() => {
                     setSanction(String(app.amount));
-                    setAccepting(true);
+                    // Inside the 100-day gap the warning comes first; accepting
+                    // continues from there, declining rejects on the spot.
+                    if (gapActive) setGapWarning(true);
+                    else setAccepting(true);
                   }}
                 >
                   {busy ? <span className="spinner" /> : 'Accept'}
@@ -832,6 +904,54 @@ export default function FormDetail() {
               autoFocus
             />
           </Field>
+        </Modal>
+      )}
+
+      {/* ------------------------------------- MLA: inside the 100-day gap */}
+      {gapWarning && app.lastSupport && (
+        <Modal
+          title={`Only ${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} since the last support`}
+          description={`${app.fullName} last took support on ${formatDate(app.lastSupport.takenAt)} (${app.lastSupport.referenceNo}).`}
+          onClose={() => setGapWarning(false)}
+          actions={
+            <>
+              <button
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() =>
+                  decide(
+                    'rejected',
+                    `Within the ${app.supportGapDays}-day support gap — last support taken ` +
+                      `${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} ago (${app.lastSupport.referenceNo}).`
+                  )
+                }
+              >
+                {busy ? <span className="spinner" /> : 'No — reject'}
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  setGapWarning(false);
+                  setAccepting(true);
+                }}
+              >
+                Yes — accept
+              </button>
+            </>
+          }
+        >
+          <Banner kind="warn" icon="⚠️">
+            <strong>
+              {gapRemaining} {gapRemaining === 1 ? 'day' : 'days'} of the {app.supportGapDays}-day
+              gap {gapRemaining === 1 ? 'is' : 'are'} still there.
+            </strong>{' '}
+            Do you want to accept the request?
+          </Banner>
+          <p className="modal-note">
+            Yes continues to the sanctioned amount. No rejects this application with the gap as the
+            recorded reason.
+          </p>
         </Modal>
       )}
 
