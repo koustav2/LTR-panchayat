@@ -80,6 +80,29 @@ function Pipeline({ app }) {
           ? 'Awaiting decision'
           : 'Not yet'
       )}
+      {/* Only an accepted application has a money trail worth drawing. */}
+      {s === 'accepted' && (
+        <>
+          {step(
+            app.handedOverAt ? 'done' : 'now',
+            'Handover for Distribution',
+            app.handedOverAt
+              ? `Handed over · ${formatDate(app.handedOverAt)}`
+              : 'Waiting on the Head Sahayak'
+          )}
+          {step(
+            app.returnedAt ? 'stop' : app.distributedAt ? 'done' : app.handedOverAt ? 'now' : 'todo',
+            'Distribution',
+            app.returnedAt
+              ? `Money returned · ${formatDate(app.returnedAt)}`
+              : app.distributedAt
+              ? `Distributed · ${formatDate(app.distributedAt)}`
+              : app.handedOverAt
+              ? 'Waiting on the Sahayak’s photo'
+              : 'Not yet'
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -98,6 +121,9 @@ export default function FormDetail() {
   // MLA
   const [rejecting, setRejecting] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  // The applicant took support within the last 100 days and the MLA pressed
+  // Accept — yes continues to the amount, no rejects on the spot.
+  const [gapWarning, setGapWarning] = useState(false);
   const [reason, setReason] = useState('');
   const [comment, setComment] = useState('');
   const [sanction, setSanction] = useState('');
@@ -107,9 +133,13 @@ export default function FormDetail() {
   const [headRejecting, setHeadRejecting] = useState(false);
   const [headComment, setHeadComment] = useState('');
 
-  // Distribution
+  // Handover (Head Sahayak) and distribution / return (Sahayak)
+  const [confirmingHandover, setConfirmingHandover] = useState(false);
   const [handingOver, setHandingOver] = useState(false);
   const [distPhoto, setDistPhoto] = useState(null);
+  const [returning, setReturning] = useState(false);
+  const [returnPhoto, setReturnPhoto] = useState(null);
+  const [returnRemark, setReturnRemark] = useState('');
 
   const load = useCallback(
     async (reveal = false) => {
@@ -131,9 +161,12 @@ export default function FormDetail() {
   const closeAll = () => {
     setRejecting(false);
     setAccepting(false);
+    setGapWarning(false);
     setForwarding(false);
     setHeadRejecting(false);
+    setConfirmingHandover(false);
     setHandingOver(false);
+    setReturning(false);
   };
 
   async function decide(status, rejectionReason) {
@@ -178,6 +211,21 @@ export default function FormDetail() {
     }
   }
 
+  async function recordHandover() {
+    setBusy(true);
+    try {
+      await api.handover(id);
+      closeAll();
+      setNotice('Handed over for distribution. The Sahayak can now upload the distribution photo.');
+      await load(revealed);
+    } catch (err) {
+      setError(err.message);
+      closeAll();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function recordDistribution() {
     if (!distPhoto) return;
     setBusy(true);
@@ -186,6 +234,24 @@ export default function FormDetail() {
       closeAll();
       setDistPhoto(null);
       setNotice('Recorded as distributed to the applicant.');
+      await load(revealed);
+    } catch (err) {
+      setError(err.message);
+      closeAll();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recordReturn() {
+    if (!returnPhoto || returnRemark.trim().length < 3) return;
+    setBusy(true);
+    try {
+      await api.returnMoney(id, returnPhoto.id, returnRemark.trim());
+      closeAll();
+      setReturnPhoto(null);
+      setReturnRemark('');
+      setNotice('Recorded: the money was returned. The Head Sahayak and the MLA can see the photo and your remark.');
       await load(revealed);
     } catch (err) {
       setError(err.message);
@@ -214,15 +280,32 @@ export default function FormDetail() {
   const isSupervisor = user.role === 'supervisor';
   const canVerify = isHead && app.status === 'pending_head';
   const canDecide = isMla && app.status === 'pending_mla';
-  // Either field role can record the handover — whoever is standing in front of
-  // the applicant. The MLA decides; they do not distribute.
-  const canDistribute =
-    (isSupervisor || isHead) && app.status === 'accepted' && !app.distributedAt;
+
+  // After the MLA accepts: the Head Sahayak hands the money over for
+  // distribution, then the Sahayak — and only the Sahayak — either uploads the
+  // distribution photo or returns the money with a photo and remark.
+  const isAccepted = app.status === 'accepted';
+  const settled = Boolean(app.distributedAt || app.returnedAt);
+  const canHandover = isHead && isAccepted && !app.handedOverAt && !settled;
+  const canDistribute = isSupervisor && isAccepted && Boolean(app.handedOverAt) && !settled;
+  const canReturn = canDistribute;
+  // The Sahayak sees an accepted application before the handover; the Head
+  // Sahayak sees one waiting on the photo. Both get a why-no-button note.
+  const awaitingHandover = isSupervisor && isAccepted && !app.handedOverAt && !settled;
+  const awaitingPhoto = isHead && isAccepted && Boolean(app.handedOverAt) && !settled;
   // The MLA can see a form still in verification, and one the head turned down,
   // but can act on neither. Saying so beats an unexplained missing button.
   const mlaBlocked = isMla && (app.status === 'pending_head' || app.status === 'head_rejected');
 
   const delta = app.approvedAmount == null ? 0 : app.approvedAmount - app.amount;
+
+  // The 100-day gap between supports. `lastSupport` only counts money actually
+  // taken (accepted and not returned), so a pending or rejected earlier form
+  // never trips the warning.
+  const gapActive = Boolean(
+    app.lastSupport && app.supportGapDays && app.lastSupport.daysSince < app.supportGapDays
+  );
+  const gapRemaining = gapActive ? app.supportGapDays - app.lastSupport.daysSince : 0;
 
   // A repeat applicant often does not re-upload their photo, so nothing of
   // kind 'applicant_photo' is attached to this particular application. Fall
@@ -290,6 +373,26 @@ export default function FormDetail() {
           </div>
         )}
 
+        {/* The money trail, step by step. The handover record first, then the
+            proof it reached the applicant — or the record that it came back. */}
+        {app.handedOverAt && (
+          <div className="detail-group">
+            <h3>Handed Over for Distribution</h3>
+            <div className="handover-done">
+              <div className="hd-meta">
+                <div>
+                  <div className="k">Handed over on</div>
+                  <div className="v">{formatDate(app.handedOverAt, true)}</div>
+                </div>
+                <div>
+                  <div className="k">By</div>
+                  <div className="v">{app.handedOverByName || '—'}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Proof the money actually reached the applicant. Shown to everyone
             once recorded — it is the end of the story for this application. */}
         {app.distributedAt && (
@@ -298,7 +401,7 @@ export default function FormDetail() {
             <div className="handover-done">
               <div className="hd-meta">
                 <div>
-                  <div className="k">Handed over on</div>
+                  <div className="k">Distributed on</div>
                   <div className="v">{formatDate(app.distributedAt, true)}</div>
                 </div>
                 <div>
@@ -322,6 +425,41 @@ export default function FormDetail() {
                 </a>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Distribution could not be completed: the money came back. The photo
+            and the Sahayak's remark are the record, visible to the Head
+            Sahayak and the MLA alike. */}
+        {app.returnedAt && (
+          <div className="detail-group">
+            <h3>Money Returned</h3>
+            <div className="row-returned" style={{ marginTop: 0, marginBottom: 10 }}>
+              Distribution was not completed. {app.returnedByName || 'The Sahayak'} returned the
+              money on {formatDate(app.returnedAt, true)}.
+            </div>
+            {app.returnRemark && (
+              <div className="stage-note head" style={{ marginBottom: 10 }}>
+                <strong>Remark:</strong> {app.returnRemark}
+              </div>
+            )}
+            {app.returnPhotoFileId && (
+              <div className="attachments">
+                <a
+                  className="photo-tile"
+                  href={api.fileUrl(app.returnPhotoFileId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open full size"
+                >
+                  <img
+                    src={api.fileUrl(app.returnPhotoFileId)}
+                    alt={`Return photo for ${app.fullName}`}
+                  />
+                  <div className="cap">Return photo</div>
+                </a>
+              </div>
+            )}
           </div>
         )}
 
@@ -377,6 +515,63 @@ export default function FormDetail() {
           </div>
         </div>
 
+        {/* Earlier requests from the same person — reviewers only (the server
+            omits `history` for supervisors). Each row opens that application.
+            The gap line answers the question the reviewer is actually asking:
+            how long since this person last took support? */}
+        {app.history && app.history.length > 0 && (
+          <div className="detail-group">
+            <h3>Previous Requests from this Applicant ({app.history.length})</h3>
+            {app.lastSupport ? (
+              <div className={`gap-note ${gapActive ? 'warn' : 'ok'}`}>
+                Last support taken on {formatDate(app.lastSupport.takenAt)} —{' '}
+                <strong>
+                  {app.lastSupport.daysSince === 0
+                    ? 'today'
+                    : `${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} ago`}
+                </strong>
+                {gapActive
+                  ? ` · ${gapRemaining} ${gapRemaining === 1 ? 'day' : 'days'} of the ${app.supportGapDays}-day gap still remain`
+                  : ` · outside the ${app.supportGapDays}-day gap`}
+                {app.lastSupport.amount != null && ` · ${formatMoney(app.lastSupport.amount)} granted`}
+              </div>
+            ) : (
+              <div className="gap-note ok">
+                Earlier requests exist, but none was granted — no support taken yet.
+              </div>
+            )}
+            <div className="history-rows">
+              {app.history.map((h) => (
+                <button key={h.id} className="history-row" onClick={() => navigate(`/forms/${h.id}`)}>
+                  <span className="h-when">
+                    <span className="h-ref">{h.referenceNo}</span>
+                    <span className="h-date">
+                      {formatDate(h.submittedAt)}
+                      {h.status === 'accepted' &&
+                        ` · taken ${formatDate(h.distributedAt || h.decidedAt)}`}
+                    </span>
+                  </span>
+                  <span className="h-type">{h.supportType}</span>
+                  <span className="h-money">
+                    <span>
+                      <span className="ml">Requested</span>
+                      <span className="mv">{formatMoney(h.amount)}</span>
+                    </span>
+                    <span>
+                      <span className="ml">Got</span>
+                      <span className={`mv ${h.approvedAmount != null ? 'granted' : 'pendingv'}`}>
+                        {h.approvedAmount != null ? formatMoney(h.approvedAmount) : '—'}
+                        {h.returnedAt ? ' (returned)' : ''}
+                      </span>
+                    </span>
+                  </span>
+                  <StatusBadge status={h.status} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="detail-group">
           <h3>Applicant</h3>
           <div className="dl">
@@ -391,7 +586,7 @@ export default function FormDetail() {
                   <button
                     onClick={() => load(true)}
                     style={{
-                      background: 'none', border: 0, color: '#15803d', textDecoration: 'underline',
+                      background: 'none', border: 0, color: '#1d6aa6', textDecoration: 'underline',
                       cursor: 'pointer', font: 'inherit', fontSize: 13, padding: 0, marginLeft: 4,
                     }}
                   >
@@ -472,6 +667,10 @@ export default function FormDetail() {
             {app.headReviewedAt && <Row k="Verified on" v={formatDate(app.headReviewedAt, true)} />}
             {app.reviewedAt && <Row k="Decided by" v={app.reviewedByName} />}
             {app.reviewedAt && <Row k="Decided on" v={formatDate(app.reviewedAt, true)} />}
+            {app.handedOverAt && <Row k="Handed over by" v={app.handedOverByName} />}
+            {app.handedOverAt && <Row k="Handed over on" v={formatDate(app.handedOverAt, true)} />}
+            {app.returnedAt && <Row k="Returned by" v={app.returnedByName} />}
+            {app.returnedAt && <Row k="Returned on" v={formatDate(app.returnedAt, true)} />}
           </div>
         </div>
 
@@ -511,7 +710,10 @@ export default function FormDetail() {
                   disabled={busy}
                   onClick={() => {
                     setSanction(String(app.amount));
-                    setAccepting(true);
+                    // Inside the 100-day gap the warning comes first; accepting
+                    // continues from there, declining rejects on the spot.
+                    if (gapActive) setGapWarning(true);
+                    else setAccepting(true);
                   }}
                 >
                   {busy ? <span className="spinner" /> : 'Accept'}
@@ -521,28 +723,94 @@ export default function FormDetail() {
           </div>
         )}
 
+        {/* Head Sahayak: hand the money over for distribution. This starts the
+            3-day clock on the Sahayak's distribution photo. */}
+        {canHandover && (
+          <div className="card">
+            <h4>Handover for Distribution</h4>
+            <p className="panel-hint">
+              The MLA sanctioned {formatMoney(app.approvedAmount)}. Hand it over for distribution —
+              the Sahayak then uploads the photo taken when the applicant receives it.
+            </p>
+            <button
+              className="btn btn-primary btn-block"
+              disabled={busy}
+              onClick={() => setConfirmingHandover(true)}
+            >
+              Handover for Distribution
+            </button>
+          </div>
+        )}
+
+        {/* Sahayak: an accepted application the Head Sahayak has not handed
+            over yet. Nothing to do here but know why there is no button. */}
+        {awaitingHandover && (
+          <div className="card">
+            <h4>Distribution</h4>
+            <Banner kind="info">
+              Waiting for the Head Sahayak to hand this over for distribution. The distribution
+              photo can be uploaded once that happens.
+            </Banner>
+          </div>
+        )}
+
+        {/* Sahayak: the money is in hand. Either prove the distribution with a
+            photo, or — if it cannot be completed — return it with a photo and
+            a remark. */}
         {canDistribute && (
           <div className="card">
-            <h4>Handover</h4>
+            <h4>Distribution</h4>
             <p className="panel-hint">
-              The MLA sanctioned {formatMoney(app.approvedAmount)}. Record it as distributed once
-              the applicant has it — a photo taken at handover is required.
+              Handed over {formatDate(app.handedOverAt)} by {app.handedOverByName || 'the Head Sahayak'}.
+              Take a photo at handover to record {formatMoney(app.approvedAmount)} as distributed.
             </p>
             <button
               className="btn btn-primary btn-block"
               disabled={busy}
               onClick={() => setHandingOver(true)}
             >
-              Mark as distributed
+              Upload distribution photo
             </button>
+            {canReturn && (
+              <button
+                className="btn btn-ghost btn-block"
+                style={{ marginTop: 8 }}
+                disabled={busy}
+                onClick={() => setReturning(true)}
+              >
+                Distribution not possible — return the money
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Head Sahayak: handed over, photo still pending from the Sahayak. */}
+        {awaitingPhoto && (
+          <div className="card">
+            <h4>Distribution</h4>
+            <Banner kind="warn">
+              Handed over {formatDate(app.handedOverAt)} — waiting for the Sahayak to upload the
+              distribution photo. Overdue items are flagged on everyone's home page after 3 days,
+              and to the MLA after 5.
+            </Banner>
           </div>
         )}
 
         {app.status === 'accepted' && app.distributedAt && (isSupervisor || isHead) && (
           <div className="card">
-            <h4>Handover</h4>
+            <h4>Distribution</h4>
             <Banner kind="success">
               Distributed {formatDate(app.distributedAt)} by {app.distributedByName || 'a colleague'}.
+            </Banner>
+          </div>
+        )}
+
+        {app.returnedAt && (isSupervisor || isHead) && (
+          <div className="card">
+            <h4>Distribution</h4>
+            <Banner kind="warn">
+              Money returned {formatDate(app.returnedAt)} by {app.returnedByName || 'the Sahayak'} —
+              see the photo and remark on the left.
             </Banner>
           </div>
         )}
@@ -569,7 +837,7 @@ export default function FormDetail() {
           </div>
         )}
 
-        {!canVerify && !canDecide && !canDistribute && (
+        {!canVerify && !canDecide && !canDistribute && !canHandover && (
           <button className="btn btn-ghost btn-block" onClick={() => navigate(-1)}>
             Back
           </button>
@@ -639,6 +907,54 @@ export default function FormDetail() {
         </Modal>
       )}
 
+      {/* ------------------------------------- MLA: inside the 100-day gap */}
+      {gapWarning && app.lastSupport && (
+        <Modal
+          title={`Only ${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} since the last support`}
+          description={`${app.fullName} last took support on ${formatDate(app.lastSupport.takenAt)} (${app.lastSupport.referenceNo}).`}
+          onClose={() => setGapWarning(false)}
+          actions={
+            <>
+              <button
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() =>
+                  decide(
+                    'rejected',
+                    `Within the ${app.supportGapDays}-day support gap — last support taken ` +
+                      `${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} ago (${app.lastSupport.referenceNo}).`
+                  )
+                }
+              >
+                {busy ? <span className="spinner" /> : 'No — reject'}
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  setGapWarning(false);
+                  setAccepting(true);
+                }}
+              >
+                Yes — accept
+              </button>
+            </>
+          }
+        >
+          <Banner kind="warn" icon="⚠️">
+            <strong>
+              {gapRemaining} {gapRemaining === 1 ? 'day' : 'days'} of the {app.supportGapDays}-day
+              gap {gapRemaining === 1 ? 'is' : 'are'} still there.
+            </strong>{' '}
+            Do you want to accept the request?
+          </Banner>
+          <p className="modal-note">
+            Yes continues to the sanctioned amount. No rejects this application with the gap as the
+            recorded reason.
+          </p>
+        </Modal>
+      )}
+
       {/* ------------------------------------------------------- MLA: accept */}
       {accepting && (
         <Modal
@@ -704,6 +1020,31 @@ export default function FormDetail() {
         </Modal>
       )}
 
+      {/* -------------------------------- Head Sahayak: handover confirmation */}
+      {confirmingHandover && (
+        <Modal
+          title="Handover for Distribution"
+          description={`${formatMoney(app.approvedAmount)} sanctioned to ${app.fullName}.`}
+          onClose={() => setConfirmingHandover(false)}
+          actions={
+            <>
+              <button className="btn btn-ghost" onClick={() => setConfirmingHandover(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" disabled={busy} onClick={recordHandover}>
+                {busy ? <span className="spinner" /> : 'Confirm handover'}
+              </button>
+            </>
+          }
+        >
+          <p className="modal-note">
+            This records that the money has been handed over for distribution. The Sahayak then has
+            3 days to upload the distribution photo before it is flagged on every home page — and
+            to the MLA after 5 days. Confirming cannot be undone.
+          </p>
+        </Modal>
+      )}
+
       {/* --------------------------------------------- Handover: camera only */}
       {handingOver && (
         <Modal
@@ -753,6 +1094,67 @@ export default function FormDetail() {
           <p className="modal-note">
             The photo is stored with the application and is visible to the MLA. Confirming cannot be
             undone.
+          </p>
+        </Modal>
+      )}
+
+      {/* ------------------------------------- Sahayak: return of the money */}
+      {returning && (
+        <Modal
+          title="Return the money"
+          description={`Distribution could not be completed. ${formatMoney(app.approvedAmount)} sanctioned to ${app.fullName} goes back.`}
+          onClose={() => {
+            setReturning(false);
+            setReturnPhoto(null);
+          }}
+          actions={
+            <>
+              <button
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => {
+                  setReturning(false);
+                  setReturnPhoto(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                disabled={busy || !returnPhoto || returnRemark.trim().length < 3}
+                onClick={recordReturn}
+              >
+                {busy ? <span className="spinner" /> : 'Confirm return'}
+              </button>
+            </>
+          }
+        >
+          {returnPhoto ? (
+            <div className="handover-shot">
+              <img src={returnPhoto.preview} alt="Return photo" />
+              <div>
+                <div className="ok">Photo ready</div>
+                <button className="linklike" onClick={() => setReturnPhoto(null)}>
+                  Take a different one
+                </button>
+              </div>
+            </div>
+          ) : (
+            <CameraCapture kind="return_photo" onCaptured={setReturnPhoto} onError={setError} disabled={busy} />
+          )}
+
+          <Field label="Remark" required hint="Why distribution was not completed — visible to the Head Sahayak and the MLA">
+            <textarea
+              data-field="returnRemark"
+              value={returnRemark}
+              onChange={(e) => setReturnRemark(e.target.value)}
+              placeholder="e.g. Applicant has moved out of the panchayat and cannot be traced"
+            />
+          </Field>
+
+          <p className="modal-note">
+            The photo and remark are stored with the application and are visible to the Head Sahayak
+            and the MLA. Confirming cannot be undone.
           </p>
         </Modal>
       )}

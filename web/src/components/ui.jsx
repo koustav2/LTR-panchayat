@@ -94,6 +94,32 @@ export function StatusBadge({ status, long = false }) {
 }
 
 /**
+ * Where an accepted application's money is, as one badge.
+ *
+ * The sequence is: Head Sahayak hands over → Sahayak uploads the distribution
+ * photo (or returns the money). The key doubles as the badge's CSS class.
+ */
+export function handoverState(a) {
+  if (a.returnedAt) return { key: 'returned', label: 'Money returned' };
+  if (a.distributedAt) return { key: 'distributed', label: 'Distributed' };
+  if (a.handedOverAt) return { key: 'photo-pending', label: 'Photo pending' };
+  return { key: 'to-hand-over', label: 'To hand over' };
+}
+
+export function HandoverBadge({ app }) {
+  const s = handoverState(app);
+  return <span className={`badge ${s.key}`}>{s.label}</span>;
+}
+
+/** Whole days since a timestamp, for "N days ago" copy. Never negative. */
+export function daysSince(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
+}
+
+/**
  * Each role has exactly one queue that is *theirs* — the stage where an
  * application is waiting on them personally. That count is what the sidebar
  * badge shows, which chip sorts first, and which counter tile is ringed,

@@ -48,7 +48,15 @@ const upload = multer({
 
 router.use(requireAuth);
 
-const KINDS = ['applicant_photo', 'document', 'distribution_photo'];
+const KINDS = ['applicant_photo', 'document', 'distribution_photo', 'return_photo', 'profile_photo'];
+
+/** Everything except `document` is a photograph and must be an image. */
+const PHOTO_LABEL = {
+  applicant_photo: 'applicant photo',
+  distribution_photo: 'distribution photo',
+  return_photo: 'return photo',
+  profile_photo: 'profile photo',
+};
 
 /**
  * POST /api/files  (multipart: file, kind)
@@ -73,12 +81,7 @@ router.post(
         throw new ApiError(400, 'Only JPG, PNG, WEBP or PDF files are accepted.');
       }
       if (kind !== 'document' && detected === 'application/pdf') {
-        throw new ApiError(
-          400,
-          kind === 'applicant_photo'
-            ? 'The applicant photo must be an image, not a PDF.'
-            : 'The distribution photo must be an image, not a PDF.'
-        );
+        throw new ApiError(400, `The ${PHOTO_LABEL[kind]} must be an image, not a PDF.`);
       }
 
       const stored = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ALLOWED[detected]}`;
@@ -156,18 +159,25 @@ router.get('/:id', async (req, res, next) => {
         [id, req.user.id]
       );
       // Anything on an accepted application: its attachments, the beneficiary's
-      // photo, or the distribution photo.
+      // photo, the distribution photo or the return photo.
       const onApproved = await queryOne(
         `SELECT 1 AS ok
            FROM applications a
            LEFT JOIN application_files af ON af.application_id = a.id
            LEFT JOIN beneficiaries b      ON b.id = a.beneficiary_id
           WHERE a.status = 'accepted'
-            AND (af.file_id = ? OR b.photo_file_id = ? OR a.distribution_photo_file_id = ?)
+            AND (af.file_id = ? OR b.photo_file_id = ?
+                 OR a.distribution_photo_file_id = ? OR a.return_photo_file_id = ?)
           LIMIT 1`,
-        [id, id, id]
+        [id, id, id, id]
       );
-      if (!owned && !photoOwned && !onApproved && file.uploaded_by !== req.user.id) {
+      // Their own profile photo — uploaded by the Head Sahayak when the
+      // account was created, so the uploaded_by fallback does not cover it.
+      const ownProfile = await queryOne(
+        'SELECT 1 AS ok FROM users WHERE id = ? AND profile_photo_file_id = ? LIMIT 1',
+        [req.user.id, id]
+      );
+      if (!owned && !photoOwned && !onApproved && !ownProfile && file.uploaded_by !== req.user.id) {
         throw new ApiError(403, 'You do not have access to this file.');
       }
     }

@@ -25,8 +25,7 @@ export default function Login() {
     <div className="login-wrap">
       <div className="login-card">
         <div className="login-brand">
-          <div className="mark" aria-hidden="true">AMT</div>
-          <h1>Ansuman Memorial Trust</h1>
+          <img className="logo" src="/logo-full.png" alt="Ansuman Memorial Trust" />
           <p>Dharmasala &amp; Rasulpur Dharasamal</p>
         </div>
 

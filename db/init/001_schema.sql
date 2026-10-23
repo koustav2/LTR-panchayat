@@ -76,24 +76,33 @@ CREATE TABLE IF NOT EXISTS support_reasons (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
--- Users — seeded by SQL only. No signup, no in-app user management.
+-- Users. Reviewer accounts are seeded by SQL; Sahayak (supervisor) accounts
+-- can also be created in the app by the Head Sahayak.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS users (
   id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
   full_name      VARCHAR(120) NOT NULL,
+  -- The login id. May be an email address; always stored lowercased.
   username       VARCHAR(60)  NOT NULL,
+  -- Optional contact details for profiles created in the app.
+  email          VARCHAR(190) NULL,
+  phone          VARCHAR(10)  NULL,
+  profile_photo_file_id INT UNSIGNED NULL,
   password_hash  VARCHAR(255) NOT NULL,
-  -- supervisor files, head_sahayak verifies, mla decides. Seeded by SQL only.
+  -- supervisor files, head_sahayak verifies, mla decides.
   role           ENUM('supervisor','head_sahayak','mla') NOT NULL,
   block_id       INT UNSIGNED NULL,
   is_active      TINYINT(1) NOT NULL DEFAULT 1,
   last_login_at  DATETIME NULL,
+  -- Who created this account in the app; NULL for seeded accounts.
+  created_by     INT UNSIGNED NULL,
   created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_username (username),
   KEY ix_users_block (block_id),
-  CONSTRAINT fk_users_block FOREIGN KEY (block_id) REFERENCES blocks (id)
+  CONSTRAINT fk_users_block FOREIGN KEY (block_id) REFERENCES blocks (id),
+  CONSTRAINT fk_users_created_by FOREIGN KEY (created_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
@@ -105,7 +114,9 @@ CREATE TABLE IF NOT EXISTS files (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   -- distribution_photo is the proof-of-handover shot taken when a Sahayak
   -- records that an approved application's money reached the applicant.
-  kind          ENUM('applicant_photo','document','distribution_photo') NOT NULL,
+  -- return_photo is the proof shot when money could not be distributed and was
+  -- returned instead. profile_photo belongs to a user account, not a form.
+  kind          ENUM('applicant_photo','document','distribution_photo','return_photo','profile_photo') NOT NULL,
   original_name VARCHAR(255) NOT NULL,
   stored_name   VARCHAR(160) NOT NULL,
   mime_type     VARCHAR(100) NOT NULL,
@@ -116,6 +127,16 @@ CREATE TABLE IF NOT EXISTS files (
   UNIQUE KEY uq_files_stored_name (stored_name),
   CONSTRAINT fk_files_user FOREIGN KEY (uploaded_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- users.profile_photo_file_id cannot carry its FK inline — users is created
+-- before files. Added here instead, once both tables exist.
+SET @has := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+                AND CONSTRAINT_NAME = 'fk_users_profile_photo');
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD CONSTRAINT fk_users_profile_photo FOREIGN KEY (profile_photo_file_id) REFERENCES files (id)',
+  'SELECT "fk_users_profile_photo already present" AS note');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- ---------------------------------------------------------------------------
 -- Beneficiaries — one row per Aadhaar, ever. Many applications may point here.
@@ -212,14 +233,23 @@ CREATE TABLE IF NOT EXISTS applications (
   reviewed_by       INT UNSIGNED NULL,
   reviewed_at       DATETIME NULL,
 
-  -- Handover. Deliberately NOT a sixth status: distribution is a separate axis
-  -- from the decision, and folding it into `status` would take distributed
-  -- money out of the `accepted` totals the MLA reports upward. An accepted
-  -- application is either undistributed (distributed_at IS NULL) or
-  -- distributed, and stays accepted either way.
+  -- Handover and distribution. Deliberately NOT extra statuses: distribution
+  -- is a separate axis from the decision, and folding it into `status` would
+  -- take distributed money out of the `accepted` totals the MLA reports upward.
+  -- The sequence on an accepted application:
+  --   1. the Head Sahayak hands the money over for distribution (handed_over_*)
+  --   2. the Sahayak uploads the distribution photo (distributed_*), OR
+  --   3. if distribution cannot be completed, the Sahayak returns the money
+  --      with a photo and remark (returned_*).
+  handed_over_at    DATETIME NULL,
+  handed_over_by    INT UNSIGNED NULL,
   distributed_at    DATETIME NULL,
   distributed_by    INT UNSIGNED NULL,
   distribution_photo_file_id INT UNSIGNED NULL,
+  returned_at       DATETIME NULL,
+  returned_by       INT UNSIGNED NULL,
+  return_photo_file_id INT UNSIGNED NULL,
+  return_remark     TEXT NULL,
 
   submitted_by      INT UNSIGNED NOT NULL,
   submitted_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -239,6 +269,8 @@ CREATE TABLE IF NOT EXISTS applications (
   KEY ix_app_zone_rollup (block_id, zone_id, panchayat_id, status),
   -- Drives the approval list: accepted forms, undistributed first.
   KEY ix_app_distribution (status, distributed_at),
+  -- Drives the pending-photo page and the overdue alerts.
+  KEY ix_app_handover (status, handed_over_at, distributed_at),
   CONSTRAINT fk_app_beneficiary FOREIGN KEY (beneficiary_id)    REFERENCES beneficiaries (id),
   CONSTRAINT fk_app_block       FOREIGN KEY (block_id)          REFERENCES blocks (id),
   CONSTRAINT fk_app_panchayat   FOREIGN KEY (panchayat_id)      REFERENCES panchayats (id),
@@ -249,6 +281,9 @@ CREATE TABLE IF NOT EXISTS applications (
   CONSTRAINT fk_app_zone        FOREIGN KEY (zone_id)           REFERENCES zones (id),
   CONSTRAINT fk_app_distributor FOREIGN KEY (distributed_by)    REFERENCES users (id),
   CONSTRAINT fk_app_dist_photo  FOREIGN KEY (distribution_photo_file_id) REFERENCES files (id),
+  CONSTRAINT fk_app_handover_by FOREIGN KEY (handed_over_by)    REFERENCES users (id),
+  CONSTRAINT fk_app_returned_by FOREIGN KEY (returned_by)       REFERENCES users (id),
+  CONSTRAINT fk_app_return_photo FOREIGN KEY (return_photo_file_id) REFERENCES files (id),
   CONSTRAINT fk_app_submitter   FOREIGN KEY (submitted_by)      REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
