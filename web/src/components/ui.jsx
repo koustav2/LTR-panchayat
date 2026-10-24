@@ -169,6 +169,37 @@ export function Skeletons({ count = 4 }) {
   );
 }
 
+/**
+ * Full-screen in-page photo viewer — photos never open in a new tab. The ×,
+ * the backdrop and Escape all close it.
+ */
+export function Lightbox({ src, alt, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={alt || 'Photo'}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <button className="lightbox-close" aria-label="Close" onClick={onClose}>
+        ×
+      </button>
+      <img src={src} alt={alt || ''} />
+    </div>
+  );
+}
+
 export function Modal({ title, description, children, onClose, actions }) {
   const ref = useRef(null);
 

@@ -1050,6 +1050,32 @@ table.data .c-delta.down { color: var(--amber-700); }
 .camera-fallback p { font-size: 13.5px; color: var(--amber-700); margin: 0; }
 .camera-msg { font-size: 13px; color: var(--red-700); }
 
+/* ------------------------------------------------------------ lightbox --- */
+
+/* In-page photo viewer. Above every modal (60) so a photo opened from inside
+   one still covers it. */
+.lightbox {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(15, 23, 42, .88);
+  display: grid; place-items: center;
+  padding: 24px;
+}
+.lightbox img {
+  max-width: min(94vw, 1100px); max-height: 86vh;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .5);
+}
+.lightbox-close {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px)); right: 14px;
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 0; background: rgba(255, 255, 255, .16); color: #fff;
+  font-size: 28px; line-height: 1; cursor: pointer;
+  display: grid; place-items: center;
+}
+.lightbox-close:hover, .lightbox-close:active { background: rgba(255, 255, 255, .32); }
+
 /* ============================================== mobile browser hardening */
 
 /* Long placeholder names ("Dharmasala Panchayat 27") in a narrow select would

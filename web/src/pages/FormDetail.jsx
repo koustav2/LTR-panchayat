@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../auth';
 import {
-  DeskHead, StatusBadge, Banner, Modal, Field,
+  DeskHead, StatusBadge, Banner, Modal, Field, Lightbox,
   formatDate, formatMoney, stageLabel,
 } from '../components/ui';
 import CameraCapture from '../components/CameraCapture';
@@ -117,6 +117,8 @@ export default function FormDetail() {
   const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  // The photo being viewed full-screen, in page — never a new tab.
+  const [lightbox, setLightbox] = useState(null); // { src, alt }
 
   // MLA
   const [rejecting, setRejecting] = useState(false);
@@ -131,6 +133,9 @@ export default function FormDetail() {
   // Head Sahayak
   const [forwarding, setForwarding] = useState(false);
   const [headRejecting, setHeadRejecting] = useState(false);
+  // Same 100-day warning, at the verification stage: proceed continues to the
+  // forward dialog, reject drops into the normal rejection flow.
+  const [headGapWarning, setHeadGapWarning] = useState(false);
   const [headComment, setHeadComment] = useState('');
 
   // Handover (Head Sahayak) and distribution / return (Sahayak)
@@ -164,6 +169,7 @@ export default function FormDetail() {
     setGapWarning(false);
     setForwarding(false);
     setHeadRejecting(false);
+    setHeadGapWarning(false);
     setConfirmingHandover(false);
     setHandingOver(false);
     setReturning(false);
@@ -306,6 +312,12 @@ export default function FormDetail() {
     app.lastSupport && app.supportGapDays && app.lastSupport.daysSince < app.supportGapDays
   );
   const gapRemaining = gapActive ? app.supportGapDays - app.lastSupport.daysSince : 0;
+  // Shared title for both warning dialogs; "0 days since" reads wrong.
+  const gapTitle = !gapActive
+    ? ''
+    : app.lastSupport.daysSince === 0
+    ? 'Support was already taken today'
+    : `Only ${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} since the last support`;
 
   // A repeat applicant often does not re-upload their photo, so nothing of
   // kind 'applicant_photo' is attached to this particular application. Fall
@@ -409,20 +421,30 @@ export default function FormDetail() {
                   <div className="v">{app.distributedByName || '—'}</div>
                 </div>
               </div>
+              {/* Same thumbnail treatment as the applicant photo — the
+                  .attachments wrapper is what gives the tile its fixed size,
+                  so without it the image renders at full width. */}
               {app.distributionPhotoFileId && (
-                <a
-                  className="photo-tile"
-                  href={api.fileUrl(app.distributionPhotoFileId)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Open full size"
-                >
-                  <img
-                    src={api.fileUrl(app.distributionPhotoFileId)}
-                    alt={`Distribution photo for ${app.fullName}`}
-                  />
-                  <div className="cap">Distribution photo</div>
-                </a>
+                <div className="attachments">
+                  <a
+                    className="photo-tile"
+                    href={api.fileUrl(app.distributionPhotoFileId)}
+                    title="View photo"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setLightbox({
+                        src: api.fileUrl(app.distributionPhotoFileId),
+                        alt: `Distribution photo for ${app.fullName}`,
+                      });
+                    }}
+                  >
+                    <img
+                      src={api.fileUrl(app.distributionPhotoFileId)}
+                      alt={`Distribution photo for ${app.fullName}`}
+                    />
+                    <div className="cap">Distribution photo</div>
+                  </a>
+                </div>
               )}
             </div>
           </div>
@@ -448,9 +470,14 @@ export default function FormDetail() {
                 <a
                   className="photo-tile"
                   href={api.fileUrl(app.returnPhotoFileId)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Open full size"
+                  title="View photo"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setLightbox({
+                      src: api.fileUrl(app.returnPhotoFileId),
+                      alt: `Return photo for ${app.fullName}`,
+                    });
+                  }}
                 >
                   <img
                     src={api.fileUrl(app.returnPhotoFileId)}
@@ -618,12 +645,14 @@ export default function FormDetail() {
               <a
                 className="photo-tile"
                 href={api.fileUrl(photo.id)}
-                target="_blank"
-                rel="noreferrer"
-                title="Open full size"
+                title="View photo"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setLightbox({ src: api.fileUrl(photo.id), alt: `Photo of ${app.fullName}` });
+                }}
               >
                 <img src={api.fileUrl(photo.id)} alt={`Photo of ${app.fullName}`} />
-                <div className="cap">Open full size</div>
+                <div className="cap">View photo</div>
               </a>
             </div>
           ) : (
@@ -635,8 +664,22 @@ export default function FormDetail() {
           <h3>Supporting Documents {documents.length > 0 && `(${documents.length})`}</h3>
           {documents.length > 0 ? (
             <div className="attachments">
+              {/* Image documents open in the in-page viewer; a PDF cannot
+                  render in an <img>, so it alone still opens in a new tab. */}
               {documents.map((d) => (
-                <a key={d.id} href={api.fileUrl(d.id)} target="_blank" rel="noreferrer" title={d.originalName}>
+                <a
+                  key={d.id}
+                  href={api.fileUrl(d.id)}
+                  title={d.originalName}
+                  {...(d.mimeType.startsWith('image/')
+                    ? {
+                        onClick: (e) => {
+                          e.preventDefault();
+                          setLightbox({ src: api.fileUrl(d.id), alt: d.originalName });
+                        },
+                      }
+                    : { target: '_blank', rel: 'noreferrer' })}
+                >
                   {d.mimeType.startsWith('image/') ? (
                     <img src={api.fileUrl(d.id)} alt={d.originalName} />
                   ) : (
@@ -685,7 +728,17 @@ export default function FormDetail() {
                 <button className="btn btn-danger" disabled={busy} onClick={() => setHeadRejecting(true)}>
                   Reject
                 </button>
-                <button className="btn btn-primary" disabled={busy} onClick={() => setForwarding(true)}>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={() => {
+                    // Inside the 100-day gap the warning comes first; proceeding
+                    // continues to the forward dialog, declining opens the
+                    // normal rejection flow.
+                    if (gapActive) setHeadGapWarning(true);
+                    else setForwarding(true);
+                  }}
+                >
                   {busy ? <span className="spinner" /> : 'Send to MLA'}
                 </button>
               </div>
@@ -845,6 +898,51 @@ export default function FormDetail() {
       </aside>
       </div>
 
+      {/* ----------------------------- Head Sahayak: inside the 100-day gap */}
+      {headGapWarning && app.lastSupport && (
+        <Modal
+          title={gapTitle}
+          description={`${app.fullName} last took support on ${formatDate(app.lastSupport.takenAt)} (${app.lastSupport.referenceNo}).`}
+          onClose={() => setHeadGapWarning(false)}
+          actions={
+            <>
+              <button
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() => {
+                  setHeadGapWarning(false);
+                  setHeadRejecting(true);
+                }}
+              >
+                Reject
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  setHeadGapWarning(false);
+                  setForwarding(true);
+                }}
+              >
+                Proceed
+              </button>
+            </>
+          }
+        >
+          <Banner kind="warn" icon="⚠️">
+            <strong>
+              {gapRemaining} {gapRemaining === 1 ? 'day' : 'days'} of the {app.supportGapDays}-day
+              gap {gapRemaining === 1 ? 'is' : 'are'} still there.
+            </strong>{' '}
+            Do you want to send this request to the MLA?
+          </Banner>
+          <p className="modal-note">
+            Proceed continues to the MLA with your verification comment. Reject starts the normal
+            rejection flow — your reason goes to the supervisor.
+          </p>
+        </Modal>
+      )}
+
       {/* ---------------------------------------------- Head Sahayak: forward */}
       {forwarding && (
         <Modal
@@ -910,7 +1008,7 @@ export default function FormDetail() {
       {/* ------------------------------------- MLA: inside the 100-day gap */}
       {gapWarning && app.lastSupport && (
         <Modal
-          title={`Only ${app.lastSupport.daysSince} ${app.lastSupport.daysSince === 1 ? 'day' : 'days'} since the last support`}
+          title={gapTitle}
           description={`${app.fullName} last took support on ${formatDate(app.lastSupport.takenAt)} (${app.lastSupport.referenceNo}).`}
           onClose={() => setGapWarning(false)}
           actions={
@@ -926,7 +1024,7 @@ export default function FormDetail() {
                   )
                 }
               >
-                {busy ? <span className="spinner" /> : 'No — reject'}
+                {busy ? <span className="spinner" /> : 'Reject'}
               </button>
               <button
                 className="btn btn-primary"
@@ -936,7 +1034,7 @@ export default function FormDetail() {
                   setAccepting(true);
                 }}
               >
-                Yes — accept
+                Proceed
               </button>
             </>
           }
@@ -949,8 +1047,8 @@ export default function FormDetail() {
             Do you want to accept the request?
           </Banner>
           <p className="modal-note">
-            Yes continues to the sanctioned amount. No rejects this application with the gap as the
-            recorded reason.
+            Proceed continues to the sanctioned amount. Reject turns this application down with the
+            gap as the recorded reason.
           </p>
         </Modal>
       )}
@@ -1196,6 +1294,10 @@ export default function FormDetail() {
             />
           </Field>
         </Modal>
+      )}
+
+      {lightbox && (
+        <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />
       )}
     </>
   );
