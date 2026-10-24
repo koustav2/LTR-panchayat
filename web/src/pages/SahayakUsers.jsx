@@ -145,7 +145,7 @@ export default function SahayakUsers() {
           Create one with the button above — login id, password and block are all it needs.
         </Empty>
       ) : (
-        <div className="rows">
+        <div className="rows rows-cards">
           {users.map((u) => (
             <div className="row" key={u.id} style={{ cursor: 'default' }}>
               <div className="row-top" style={{ alignItems: 'center', gap: 10 }}>
