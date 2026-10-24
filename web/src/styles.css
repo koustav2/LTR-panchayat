@@ -551,6 +551,9 @@ main.has-actionbar { padding-bottom: calc(88px + var(--safe-bottom)); }
   /* ---- list becomes a table ---- */
 
   .rows { display: none; }
+  /* A list with no table counterpart (Sahayak Profiles) keeps its cards on
+     desktop instead of vanishing with the rest of the .rows lists. */
+  .rows.rows-cards { display: grid; max-width: 820px; }
 
   .table-wrap {
     display: block; overflow-x: auto;
